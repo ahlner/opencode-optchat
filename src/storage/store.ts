@@ -46,8 +46,11 @@ export class Store {
     this.db.query("INSERT OR IGNORE INTO jobs(id,input) VALUES(?,?)").run(id, value);
     return id;
   }
-  claim(now = Date.now(), leaseMs = 60000): Job | undefined {
+  claim(now = Date.now(), leaseMs = 60000, maxRunning = Number.MAX_SAFE_INTEGER): Job | undefined {
+    insist(Number.isSafeInteger(maxRunning) && maxRunning > 0, "CONFIG", "Job concurrency must be a positive integer");
     return this.transaction(() => {
+      const live = this.db.query("SELECT count(*) AS n FROM jobs WHERE status='running' AND leaseUntil>?").get(now) as { n: number };
+      if (live.n >= maxRunning) return;
       const row = this.db.query("SELECT * FROM jobs WHERE status='pending' OR (status='running' AND leaseUntil<=?) ORDER BY rowid LIMIT 1").get(now) as (Omit<Job, "input"> & { input: string }) | null;
       if (!row) return;
       const fence = row.fence + 1;
@@ -63,8 +66,8 @@ export class Store {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
   }
   // Recover after suspension only if no other worker or retention change replaced this fence.
-  recoverLease(job: Job, leaseMs: number, now = Date.now()): boolean {
-    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running'").run(now + leaseMs, job.id, job.fence).changes === 1;
+  recoverLease(job: Job, leaseMs: number, now = Date.now(), maxRunning = Number.MAX_SAFE_INTEGER): boolean {
+    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND (SELECT count(*) FROM jobs WHERE status='running' AND leaseUntil>? AND id<>?)<?").run(now + leaseMs, job.id, job.fence, now, job.id, maxRunning).changes === 1;
   }
   fail(job: Job, error: unknown) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);

@@ -67,6 +67,15 @@ Confirm the possible model costs.
 This action requeues failed jobs and preserves originals.
 Processing resumes on the next session reconciliation. It does not activate a disabled adapter.
 
+The adapter permits one unexpired compactor job per database, across worker connections.
+It retries explicit rate limits at most three times after the initial request.
+Retry delays increase from one to four seconds and respect longer provider delays up to 30 seconds.
+The requests and delays share one `waitMs` deadline.
+Other model errors still leave failed jobs for operator review.
+
+Summaries must still fit 512 UTF-8 bytes.
+These limits reduce request bursts. They do not guarantee a completion time for large archives.
+
 The lease fix recovers an expired lease only when its fence remains unchanged.
 A worker that another worker or retention change replaced discards its result.
 It does not fail the replacement job or publish stale evidence.

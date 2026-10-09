@@ -6,6 +6,7 @@ import { Engine, Store, Retrieval, ModelSummarizer, FakeSummarizer, assembleCont
 import { extract, fingerprint, contentFingerprint, liveSuffix, retainedMessage, type RawMessage } from "./transcript.ts";
 import { memoryPolicy } from "./policy.ts";
 import { setupSettings } from "./settings.ts";
+import { compactorRequest } from "./compactor-request.ts";
 
 interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
@@ -37,9 +38,9 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     const model = models.data.find(m => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
-    return (await ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal: AbortSignal.timeout(waitMs) })).text;
+    return compactorRequest(async signal => (await ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal })).text, waitMs);
   }, key(config.compactorModel));
-  const engine = new Engine(store, compactor), retrieval = new Retrieval(engine);
+  const engine = new Engine(store, compactor, { maxRunningJobs: 1 }), retrieval = new Retrieval(engine);
   let tail: Promise<unknown> = Promise.resolve(), stopped = false;
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
     const result = tail.then(fn); tail = result.catch(() => {}); return result;

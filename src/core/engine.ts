@@ -5,12 +5,13 @@ import { rangeCover, validateCover } from "./tree.ts";
 import { mergeView, project } from "./views.ts";
 
 interface Scope { id: string; epoch: number; policy: number; highWater: number }
-export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean }
-const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false };
+export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number }
+const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 export class Engine {
   readonly options: EngineOptions;
   constructor(readonly store: Store, readonly summarizer: Summarizer = new FakeSummarizer(), options: Partial<EngineOptions> = {}) {
     this.options = { ...defaults, ...options };
+    insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id: string): Scope {
@@ -149,7 +150,7 @@ export class Engine {
         if (existing) { summaries.push(existing.text); ids.push(existing.id); fallback ||= existing.fallback; continue; }
         const result = await this.summarizer.summarize(parts[i]); fallback ||= result.fallback;
         const n: Node = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
-        this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
+        this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
         summaries.push(n.text); ids.push(n.id);
       }
       text = summaries.join("\n"); inputs = ids; depth++;
@@ -158,7 +159,7 @@ export class Engine {
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
   async workOne(): Promise<boolean> {
-    const job = this.store.claim(Date.now(), this.options.leaseMs);
+    const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job) return false;
     const renewal = setInterval(() => {
       try { this.store.renew(job, this.options.leaseMs); }
@@ -182,7 +183,7 @@ export class Engine {
       }
       const result = await this.summarizeFull(text, job);
       this.store.transaction(() => {
-        insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
+        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n: Node = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get<Turn>("turns", input.turnKey), s = t && this.session(t.sessionId);

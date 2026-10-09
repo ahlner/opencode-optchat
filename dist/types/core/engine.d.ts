@@ -13,6 +13,7 @@ export interface EngineOptions {
     chunkBytes: number;
     leaseMs: number;
     broadcastSubagents: boolean;
+    maxRunningJobs: number;
 }
 export declare class Engine {
     readonly store: Store;

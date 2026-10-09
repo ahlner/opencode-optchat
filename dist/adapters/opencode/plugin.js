@@ -141,7 +141,7 @@ function project(view, get, find, budget) {
 }
 
 // src/core/engine.ts
-var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false };
+var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 
 class Engine {
   store;
@@ -151,6 +151,7 @@ class Engine {
     this.store = store;
     this.summarizer = summarizer;
     this.options = { ...defaults, ...options };
+    insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id) {
@@ -327,7 +328,7 @@ class Engine {
         fallback ||= result.fallback;
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
-          insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
+          insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
           this.writeNode(n);
         });
         summaries.push(n.text);
@@ -342,7 +343,7 @@ class Engine {
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
   async workOne() {
-    const job = this.store.claim(Date.now(), this.options.leaseMs);
+    const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
     const renewal = setInterval(() => {
@@ -379,7 +380,7 @@ class Engine {
       }
       const result = await this.summarizeFull(text, job);
       this.store.transaction(() => {
-        insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
+        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -603,8 +604,12 @@ class Store {
     this.db.query("INSERT OR IGNORE INTO jobs(id,input) VALUES(?,?)").run(id, value);
     return id;
   }
-  claim(now = Date.now(), leaseMs = 60000) {
+  claim(now = Date.now(), leaseMs = 60000, maxRunning = Number.MAX_SAFE_INTEGER) {
+    insist(Number.isSafeInteger(maxRunning) && maxRunning > 0, "CONFIG", "Job concurrency must be a positive integer");
     return this.transaction(() => {
+      const live = this.db.query("SELECT count(*) AS n FROM jobs WHERE status='running' AND leaseUntil>?").get(now);
+      if (live.n >= maxRunning)
+        return;
       const row = this.db.query("SELECT * FROM jobs WHERE status='pending' OR (status='running' AND leaseUntil<=?) ORDER BY rowid LIMIT 1").get(now);
       if (!row)
         return;
@@ -620,8 +625,8 @@ class Store {
   renew(job, leaseMs, now = Date.now()) {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
   }
-  recoverLease(job, leaseMs, now = Date.now()) {
-    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running'").run(now + leaseMs, job.id, job.fence).changes === 1;
+  recoverLease(job, leaseMs, now = Date.now(), maxRunning = Number.MAX_SAFE_INTEGER) {
+    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND (SELECT count(*) FROM jobs WHERE status='running' AND leaseUntil>? AND id<>?)<?").run(now + leaseMs, job.id, job.fence, now, job.id, maxRunning).changes === 1;
   }
   fail(job, error) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
@@ -1072,6 +1077,40 @@ async function setupSettings(ctx, start) {
   };
 }
 
+// src/adapters/opencode/compactor-request.ts
+async function compactorRequest(generate, waitMs, sleep = pause) {
+  const signal = AbortSignal.timeout(waitMs);
+  for (let attempt = 0;; attempt++) {
+    signal.throwIfAborted();
+    try {
+      return await generate(signal);
+    } catch (error) {
+      const message = String(error);
+      if (signal.aborted || attempt >= 3 || !/rate[ -]?limit|too many requests|\b429\b/i.test(message))
+        throw error;
+      const seconds = /retry after\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i.exec(message);
+      const delay = Math.max(1000 * 2 ** attempt, seconds ? Number(seconds[1]) * 1000 : 0);
+      if (!Number.isFinite(delay) || delay > 30000)
+        throw error;
+      await sleep(delay, signal);
+    }
+  }
+}
+function pause(ms, signal) {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
 // src/adapters/opencode/plugin.ts
 var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
@@ -1105,9 +1144,9 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     const model = models.data.find((m) => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
-    return (await ctx.generate.text({ model: config.compactorModel, prompt }, { signal: AbortSignal.timeout(waitMs) })).text;
+    return compactorRequest(async (signal) => (await ctx.generate.text({ model: config.compactorModel, prompt }, { signal })).text, waitMs);
   }, key(config.compactorModel));
-  const engine = new Engine(store, compactor), retrieval = new Retrieval(engine);
+  const engine = new Engine(store, compactor, { maxRunningJobs: 1 }), retrieval = new Retrieval(engine);
   let tail = Promise.resolve(), stopped = false;
   const serial = (fn) => {
     const result = tail.then(fn);
@@ -1440,4 +1479,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=894F39C2262D804F64756E2164756E21
+//# debugId=7D1E59934EF6CAB464756E2164756E21

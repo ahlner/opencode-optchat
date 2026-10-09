@@ -136,7 +136,7 @@ function project(view, get, find, budget) {
 }
 
 // src/core/engine.ts
-var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false };
+var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 
 class Engine {
   store;
@@ -146,6 +146,7 @@ class Engine {
     this.store = store;
     this.summarizer = summarizer;
     this.options = { ...defaults, ...options };
+    insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id) {
@@ -322,7 +323,7 @@ class Engine {
         fallback ||= result.fallback;
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
-          insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
+          insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
           this.writeNode(n);
         });
         summaries.push(n.text);
@@ -337,7 +338,7 @@ class Engine {
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
   async workOne() {
-    const job = this.store.claim(Date.now(), this.options.leaseMs);
+    const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
     const renewal = setInterval(() => {
@@ -374,7 +375,7 @@ class Engine {
       }
       const result = await this.summarizeFull(text, job);
       this.store.transaction(() => {
-        insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
+        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -598,8 +599,12 @@ class Store {
     this.db.query("INSERT OR IGNORE INTO jobs(id,input) VALUES(?,?)").run(id, value);
     return id;
   }
-  claim(now = Date.now(), leaseMs = 60000) {
+  claim(now = Date.now(), leaseMs = 60000, maxRunning = Number.MAX_SAFE_INTEGER) {
+    insist(Number.isSafeInteger(maxRunning) && maxRunning > 0, "CONFIG", "Job concurrency must be a positive integer");
     return this.transaction(() => {
+      const live = this.db.query("SELECT count(*) AS n FROM jobs WHERE status='running' AND leaseUntil>?").get(now);
+      if (live.n >= maxRunning)
+        return;
       const row = this.db.query("SELECT * FROM jobs WHERE status='pending' OR (status='running' AND leaseUntil<=?) ORDER BY rowid LIMIT 1").get(now);
       if (!row)
         return;
@@ -615,8 +620,8 @@ class Store {
   renew(job, leaseMs, now = Date.now()) {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
   }
-  recoverLease(job, leaseMs, now = Date.now()) {
-    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running'").run(now + leaseMs, job.id, job.fence).changes === 1;
+  recoverLease(job, leaseMs, now = Date.now(), maxRunning = Number.MAX_SAFE_INTEGER) {
+    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND (SELECT count(*) FROM jobs WHERE status='running' AND leaseUntil>? AND id<>?)<?").run(now + leaseMs, job.id, job.fence, now, job.id, maxRunning).changes === 1;
   }
   fail(job, error) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
@@ -779,4 +784,4 @@ export {
   turnKey
 };
 
-//# debugId=FC0358D1F311066E64756E2164756E21
+//# debugId=78179D97A6295E7F64756E2164756E21

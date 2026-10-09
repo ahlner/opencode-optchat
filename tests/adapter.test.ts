@@ -15,6 +15,26 @@ test("server-wide terminal events do not import unrelated Locations into a confi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("adapter retries a transient rate limit and publishes without losing originals", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-rate-limit-"));
+  let calls = 0;
+  try {
+    const database = join(root, "memory.sqlite");
+    const cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root }, options: { database, scopeId: "retry-scope", compactorModel: { id: "fixture", providerID: "fixture" } },
+      session: { hook: async () => {}, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => [{ id: "original", type: "user", time: { created: 1 }, text: "RETAINED_RETRY_EVIDENCE" }, { id: "idle", type: "idle", time: { created: 2 }, outcome: "succeeded" }] },
+      agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) }, generate: { text: async () => { if (++calls === 1) throw new Error("Generate.UnavailableError: Rate limit exceeded. Retry after 1 seconds."); return { text: "Retained retry evidence." }; } }, tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () { yield { type: "session.execution.succeeded", location: { directory: root }, data: { sessionID: "retry-session" } }; } },
+    } as any);
+    await cleanup?.();
+    const store = new Store(database);
+    try {
+      expect(calls).toBeGreaterThan(1);
+      expect(store.all("publications")).toHaveLength(1);
+      expect(store.db.query("SELECT id FROM jobs WHERE status='failed'").all()).toEqual([]);
+      expect(JSON.stringify(new Engine(store).sources("retry-session", 0))).toContain("RETAINED_RETRY_EVIDENCE");
+    } finally { store.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("real-compactor rejection preserves originals and failed jobs instead of retiring history", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-compactor-failure-"));
   try {

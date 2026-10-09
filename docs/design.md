@@ -99,6 +99,12 @@ The operator can schedule another attempt.
 The summarizer retries invalid output lengths within a fixed attempt limit.
 It never cuts output bytes to satisfy the limit.
 
+The adapter limits atomic claims to one unexpired running job per database.
+The standalone engine retains its default parallel worker support.
+Explicit rate limits permit three additional model attempts with increasing delays and one shared request deadline.
+The adapter respects provider delays up to 30 seconds. Longer delays leave the job failed.
+Existing failed jobs still require an operator retry.
+
 `MEMORY_NOT_READY` means a required complete prefix or suitable durable projection is missing.
 The adapter waits at most `waitMs`.
 `ACTIVE_TURN_TOO_LARGE` stops the request explicitly.

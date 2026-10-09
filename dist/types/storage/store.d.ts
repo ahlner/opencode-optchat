@@ -9,10 +9,10 @@ export declare class Store {
     remove(bucket: string, id: string): void;
     all<T>(bucket: string): T[];
     enqueue(input: JobInput): string;
-    claim(now?: number, leaseMs?: number): Job | undefined;
+    claim(now?: number, leaseMs?: number, maxRunning?: number): Job | undefined;
     owns(job: Job): boolean;
     renew(job: Job, leaseMs: number, now?: number): boolean;
-    recoverLease(job: Job, leaseMs: number, now?: number): boolean;
+    recoverLease(job: Job, leaseMs: number, now?: number, maxRunning?: number): boolean;
     fail(job: Job, error: unknown): void;
     close(): void;
 }

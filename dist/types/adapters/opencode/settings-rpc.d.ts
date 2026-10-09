@@ -194,6 +194,10 @@ export declare const SettingsRpc: {
                         readonly type: "integer";
                         readonly minimum: 0;
                     };
+                    readonly nativeTurns: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
                     readonly lastError: {
                         readonly type: "string";
                     };
@@ -264,6 +268,10 @@ export declare const SettingsRpc: {
                         readonly minimum: 0;
                     };
                     readonly activeTurns: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly nativeTurns: {
                         readonly type: "integer";
                         readonly minimum: 0;
                     };

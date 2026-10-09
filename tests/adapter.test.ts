@@ -6,6 +6,34 @@ import { Store, Engine } from "../src/index.ts";
 import { extract, fingerprint } from "../src/adapters/opencode/transcript.ts";
 import { automaticScope } from "../src/adapters/opencode/settings-scope.ts";
 
+test("an admitted memory turn cannot switch to native mode when host validation fails", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-pinned-mode-")), database = join(root, "memory.sqlite");
+  const hooks: Record<string, (event: any) => Promise<void>> = {}; let unavailable = false;
+  const ctx: any = {
+    app: { version: "2.0.26" }, location: { directory: root, project: { id: "stable", canonical: root } },
+    options: { database, scopeId: "u:p", fakeSummarizer: true, waitMs: 100 },
+    session: { hook: async (name: string, fn: any) => { hooks[name] = fn; }, get: async () => ({ projectID: "stable", location: { directory: root }, permissions: [] }), context: async () => { if (unavailable) throw new Error("Host is unavailable"); return [{ id: "current", type: "user", time: { created: 1 }, text: "CURRENT" }]; } },
+    agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ providerID: "fixture", id: "fixture", limit: { context: 32000, output: 1024 } }] }) },
+    tool: { transform: async (fn: any) => fn({ add() {} }) }, event: { subscribe: async function* () {} },
+  };
+  const cleanup = await plugin.setup(ctx);
+  try {
+    const request = { sessionID: "session", agent: "build", model: { providerID: "fixture", id: "fixture" }, options: {}, system: [], tools: { optchat_search: {} }, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+    await hooks.context!(request);
+    expect(Object.keys(request.tools)).toEqual(["optchat_search"]);
+    const store = new Store(database); const journal = store.get<any>("adapter", "session");
+    const before = store.all<any>("snapshots"); expect(journal.activeId).toBe("current");
+    unavailable = true;
+    const continuation = { ...request, system: [], messages: [...request.messages, { id: "assistant", role: "assistant", content: "tool continuation" }] };
+    await expect(hooks.context!(continuation)).rejects.toThrow("Host is unavailable");
+    expect(store.get("nativeActive", "session")).toBeUndefined();
+    expect(store.all("snapshots")).toEqual(before);
+    expect(continuation.system).toEqual([]);
+    expect(Object.keys(continuation.tools)).toEqual(["optchat_search"]);
+    store.close();
+  } finally { await (cleanup as any)?.(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("cancelled chunk work preserves durable progress and cannot release another worker's fence", async () => {
   const store = new Store(), controller = new AbortController();
   let calls = 0, finishLate!: (value: any) => void;
@@ -32,7 +60,7 @@ test("cancelled chunk work preserves durable progress and cannot release another
   } finally { finishLate?.({ text: "Ignored.", model: "fixture", promptVersion: "fixture", fallback: false }); store.close(); }
 });
 
-test("cold history cancellation releases settings and discards a provider result that arrives after the deadline", async () => {
+test("cold history uses native messages immediately, remains native through continuations, and prepares independently", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-cold-cancel-"));
   const database = join(root, "memory.sqlite"), hooks: Record<string, any> = {};
   let rpc: Record<string, any> = {}, calls = 0, fast = false, signal: AbortSignal | undefined;
@@ -49,21 +77,26 @@ test("cold history cancellation releases settings and discards a provider result
       storage: { get: async () => undefined, set: async () => {} }, rpc: { register: async (_: any, handlers: any) => { rpc = handlers; return { dispose: async () => {} }; } },
       session: { hook: async (name: string, callback: any) => { hooks[name] = callback; return { dispose: async () => {} }; },
         get: async () => ({ projectID: "stable", agent: "build", permissions: [], location: { directory: root } }),
-        context: async () => [...history, { id: "current", type: "user", time: { created: 100 }, text: "CURRENT" }] },
+        context: async ({ sessionID }: any) => sessionID === "fresh-session" ? [{ id: "fresh", type: "user", time: { created: 101 }, text: "FRESH" }] : [...history, { id: "current", type: "user", time: { created: 100 }, text: "CURRENT" }] },
       agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 131072, output: 1024 } }] }) },
       generate: { text: async (_: any, options: any) => { calls++; signal = options.signal; return fast ? { text: "Historical evidence." } : late; } },
       tool: { transform: async (callback: any) => { callback({ add() {} }); return { dispose: async () => {} }; } }, event: { subscribe: async function* () {} },
     } as any) as typeof cleanup;
-    const request = { sessionID: "cold-session", agent: "build", model: { providerID: "fixture", id: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+    const request = { sessionID: "cold-session", agent: "build", model: { providerID: "fixture", id: "fixture" }, options: {}, system: [], tools: { optchat_search: {}, native_echo: {} }, messages: [{ id: "past-0", role: "user", content: "HISTORICAL_EVIDENCE_0" }, { id: "current", role: "user", content: "CURRENT" }] };
     const system = request.system, messages = request.messages, started = performance.now();
-    await expect(hooks.context(request)).rejects.toThrow("MEMORY_NOT_READY");
-    expect(performance.now() - started).toBeLessThan(500); expect(signal?.aborted).toBe(true); expect(calls).toBe(1);
-    expect(request.system).toBe(system); expect(request.messages).toBe(messages);
+    await hooks.context(request);
+    expect(performance.now() - started).toBeLessThan(500); expect(calls).toBe(0);
+    expect(request.system).not.toBe(system); expect(request.messages).toBe(messages);
+    expect(JSON.stringify(request.system)).toContain("unavailable for this entire turn");
+    expect(Object.keys(request.tools)).toEqual(["native_echo"]);
+    const deadline = Date.now() + 3000;
+    while (!signal?.aborted && Date.now() < deadline) await Bun.sleep(10);
+    expect(signal?.aborted).toBe(true); expect(calls).toBe(1);
     const diagnosticText = await Bun.file(`${database}.diagnostics.ndjson`).text();
     const diagnosticRows = diagnosticText.trim().split("\n").map(line => JSON.parse(line));
     expect(diagnosticRows.some(r => r.phase === "compactor.generate" && r.event === "phase.start")).toBe(true);
     expect(diagnosticRows.some(r => r.event === "job.release")).toBe(true);
-    expect(diagnosticRows.some(r => r.phase === "primary.context" && r.errorCode === "MEMORY_NOT_READY")).toBe(true);
+    expect(diagnosticRows.some(r => r.event === "primary.native")).toBe(true);
     expect(diagnosticRows.some(r => r.phase === "queue.wait" && r.sessionId === "cold-session")).toBe(true);
     expect(diagnosticText).not.toContain("HISTORICAL_EVIDENCE"); expect(diagnosticText).not.toContain("LATE_RESULT_MUST_NOT_COMMIT");
     // The native settings guard must not retain a request after its deadline.
@@ -74,9 +107,18 @@ test("cold history cancellation releases settings and discards a provider result
       expect(new Engine(store).sources("cold-session", 0)).toHaveLength(1);
       finishLate({ text: "LATE_RESULT_MUST_NOT_COMMIT" }); await Bun.sleep(10);
       expect(store.db.query("SELECT id FROM nodes").all()).toEqual([]); expect(calls).toBe(1);
-      fast = true; await hooks.context(request);
+      fast = true;
+      const finished = Date.now() + 3000;
+      while (store.all("publications").length < 24 && Date.now() < finished) await Bun.sleep(10);
       expect(new Engine(store).sources("cold-session", 0)).toHaveLength(24);
       expect(store.all("publications")).toHaveLength(24);
+      await hooks.context(request); expect(request.messages).toBe(messages);
+      expect(JSON.stringify(request.system)).toContain("unavailable for this entire turn");
+      const fresh = { ...request, sessionID: "fresh-session", system: [], tools: { optchat_search: {}, native_echo: {} }, messages: [{ id: "fresh", role: "user", content: "FRESH" }] };
+      const before = calls; await hooks.context(fresh);
+      expect(calls).toBe(before); expect(JSON.stringify(fresh.system)).toContain("Historical evidence.");
+      expect(JSON.stringify(fresh.system)).not.toContain("unavailable for this entire turn");
+      expect(fresh.tools).toHaveProperty("optchat_search");
       expect(JSON.stringify(store.db.query("SELECT value FROM nodes").all())).not.toContain("LATE_RESULT_MUST_NOT_COMMIT");
     } finally { store.close(); }
   } finally { finishLate({ text: "Ignored late result." }); await cleanup?.(); await rm(root, { recursive: true, force: true }); }
@@ -131,7 +173,7 @@ test("real-compactor rejection preserves originals and failed jobs instead of re
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("admission waits for another worker's durable cover and stops within its deadline without changing the request", async () => {
+test("primary admission does not wait for another worker and does not switch a native turn after cover completion", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-admission-"));
   try {
     for (const ready of [true, false]) {
@@ -151,8 +193,14 @@ test("admission waits for another worker's durable cover and stops within its de
       let release: ReturnType<typeof setTimeout> | undefined;
       if (ready) release = setTimeout(() => worker.db.query("UPDATE jobs SET status='pending' WHERE id=? AND fence=?").run(lease.id, lease.fence), 45);
       try {
-        if (ready) { await hooks.context!(request); expect(performance.now() - started).toBeGreaterThanOrEqual(35); expect(JSON.stringify(request.system)).toContain("DURABLE_COVER_EVIDENCE"); expect(request.messages).toHaveLength(1); expect(reconciliations).toBeGreaterThan(1); }
-        else { await expect(hooks.context!(request)).rejects.toThrow("MEMORY_NOT_READY"); expect(performance.now() - started).toBeLessThan(500); expect(request.system).toBe(system); expect(request.messages).toBe(messages); }
+        await hooks.context!(request); expect(performance.now() - started).toBeLessThan(35);
+        expect(request.messages).toBe(messages); expect(request.messages).toHaveLength(2);
+        expect(JSON.stringify(request.system)).not.toContain("DURABLE_COVER_EVIDENCE");
+        expect(JSON.stringify(request.system)).toContain("unavailable for this entire turn");
+        if (ready) {
+          await Bun.sleep(50); await engine.drain(); await hooks.context!(request);
+          expect(request.messages).toBe(messages); expect(JSON.stringify(request.system)).not.toContain("DURABLE_COVER_EVIDENCE");
+        }
       } finally { if (release) clearTimeout(release); await cleanup?.(); worker.close(); }
     }
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -198,11 +246,12 @@ test("agent and lifecycle readiness events preserve history and admission resume
     expect(store.db.query("SELECT status,fence FROM jobs WHERE id=?").get(lease.id)).toEqual({ status: "running", fence: lease.fence });
     store.db.query("UPDATE jobs SET status='pending' WHERE id=? AND fence=?").run(lease.id, lease.fence);
     cleanup = await plugin.setup(context(false) as any) as typeof cleanup;
+    await engine.drain();
     const request = { sessionID: "session", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
     await hooks.context!(request);
     expect(engine.session("session").generation).toBe(0); expect(engine.sources("session", 0)).toHaveLength(2);
-    expect(JSON.stringify(request.system)).toContain("PRESERVED_ORIGINAL"); expect(request.messages).toHaveLength(1);
-    expect(store.get("adapterErrors", "session")).toBeUndefined();
+    expect(JSON.stringify(request.system)).toContain("unavailable for this entire turn"); expect(request.messages).toHaveLength(1);
+    expect(engine.session("session").disabled).toBeUndefined();
   } finally { await cleanup?.(); store.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -217,13 +266,13 @@ test("startup recovers only the known false readiness disable and repeated event
     store.set("sessions", "false-but-denied", { ...engine.session("false-but-denied"), disabled: reason });
     store.set("sessions", "denied", { ...engine.session("denied"), disabled: "Memory read permission was revoked" });
     store.set("sessions", "uncertain", { ...engine.session("uncertain"), disabled: "CHECKPOINT_MISSING: Unknown original mapping" });
-    const hooks: Record<string, (event: any) => Promise<void>> = {};
+    const hooks: Record<string, (event: any) => Promise<void>> = {}; let delivered = false;
     const cleanup = await plugin.setup({ app: { version: "2.0.26" }, options: { database, scopeId: "u:p", fakeSummarizer: true },
       session: { hook: async (name: string, callback: any) => { hooks[name] = callback; }, get: async ({ sessionID }: any) => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: sessionID === "false-but-denied" ? [{ action: "optchat.read", resource: "u:p", effect: "deny" }] : [] }), context: async () => [] },
       agent: { get: async () => ({ data: { permissions: [] } }) }, tool: { transform: async (callback: any) => callback({ add() {} }) },
-      event: { subscribe: async function* () { for (let i = 0; i < 5; i++) yield { type: "session.agent.selected", data: { sessionID: "uncertain" } }; } },
+      event: { subscribe: async function* () { for (let i = 0; i < 5; i++) yield { type: "session.agent.selected", data: { sessionID: "uncertain" } }; delivered = true; } },
     } as any);
-    try { await expect(hooks.context!({ sessionID: "false-but-denied", agent: "build" })).rejects.toThrow("Memory read permission was revoked"); }
+    try { while (!delivered) await Bun.sleep(1); await hooks.context!({ sessionID: "false-but-denied", agent: "build", system: [], tools: {}, messages: [] }); }
     finally { await cleanup?.(); }
     expect(engine.session("false-disable").generation).toBe(0);
     expect(store.get<any>("sessions", "denied").disabled).toBe("Memory read permission was revoked");
@@ -243,7 +292,7 @@ test("adapter cannot consume jobs from a database assigned to another trust scop
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("a failed or producerless prefix stops promptly, preserves its journal, and resumes after repair", async () => {
+test("failed or producerless memory does not block native input, expose partial memory, or change turn modes", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-no-producer-"));
   try {
     for (const failed of [true, false]) {
@@ -263,9 +312,9 @@ test("a failed or producerless prefix stops promptly, preserves its journal, and
       try {
         const request = { sessionID: "session", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
         const system = request.system, messages = request.messages, start = performance.now();
-        await expect(hooks.context!(request)).rejects.toThrow(failed ? "COMPACTION_FAILED" : "MEMORY_STALLED");
-        expect(performance.now() - start).toBeLessThan(400); expect(requests).toBe(failed ? 0 : 1);
-        expect(request.system).toBe(system); expect(request.messages).toBe(messages);
+        await hooks.context!(request);
+        expect(performance.now() - start).toBeLessThan(400); expect(requests).toBe(2);
+        expect(request.system).not.toBe(system); expect(request.messages).toBe(messages);
         expect(engine.sources("session", 0)).toHaveLength(1); engine.validateSnapshot(snapshot);
         if (!failed) expect(store.get<any>("adapter", "session").terminalIds).toEqual(["idle-past"]);
         expect(engine.session("session").disabled).toBeUndefined();
@@ -274,9 +323,12 @@ test("a failed or producerless prefix stops promptly, preserves its journal, and
         if (failed) expect(logs).toContain('"errorCode":"SUMMARY_SIZE"');
         expect(logs).not.toContain("PRIVATE_FAILURE"); expect(logs).not.toContain("PRESERVED_NO_PRODUCER");
         store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE id=?").run(job.id);
+        const finished = Date.now() + 2000;
+        while (store.all("publications").length < 2 && Date.now() < finished) await Bun.sleep(10);
         await hooks.context!(request);
         expect(engine.sources("session", 0)).toHaveLength(2); expect(request.messages).toHaveLength(1);
-        expect(JSON.stringify(request.system)).toContain("PRESERVED_NO_PRODUCER");
+        expect(JSON.stringify(request.system)).not.toContain("PRESERVED_NO_PRODUCER");
+        expect(JSON.stringify(request.system)).toContain("unavailable for this entire turn");
       } finally { await cleanup?.(); store.close(); }
     }
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -303,11 +355,14 @@ test("native shutdown errors retain originals and only their exact legacy disabl
     expect(store.get("adapter", "legacy")).toBeUndefined(); expect(engine.session("legacy").disabled).toBeUndefined();
     expect(store.get<any>("sessions", "wrong-scope").disabled).toContain("SCOPE_MISMATCH");
     const request = { sessionID: "legacy", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
-    await expect(hooks.context!(request)).rejects.toThrow("Cannot use a closed database");
+    await hooks.context!(request);
     expect(engine.sources("retained", 0)).toHaveLength(1); engine.validateSnapshot(snapshot);
     expect(engine.session("retained").generation).toBe(0); expect(store.get("adapterErrors", "retained")).toMatchObject({ code: "HOST_UNAVAILABLE" });
-    closed = false; await hooks.context!(request);
-    expect(engine.sources("legacy", 0)).toHaveLength(1); expect(JSON.stringify(request.system)).toContain("SHUTDOWN_PRESERVED");
+    closed = false;
+    const finished = Date.now() + 2000;
+    while (!engine.sources("legacy", 0).length && Date.now() < finished) await Bun.sleep(10);
+    await hooks.context!(request);
+    expect(engine.sources("legacy", 0)).toHaveLength(1); expect(JSON.stringify(request.system)).not.toContain("SHUTDOWN_PRESERVED");
     expect(engine.sources("retained", 0)).toHaveLength(1);
   } finally { await cleanup?.(); store.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -337,16 +392,17 @@ test("global project discovery preserves its verified location scope and rejects
       try {
         const request = { sessionID: "session", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
         if (mode === "other-location") {
-          await expect(hooks.context!(request)).rejects.toThrow("SCOPE_MISMATCH");
+          await hooks.context!(request); expect(JSON.stringify(request.system)).not.toContain("DISCOVERY_SOURCE");
           expect(store.get<any>("sessions", "session").projectId).toBe("global");
         } else if (mode === "denied") {
-          await expect(hooks.context!(request)).rejects.toThrow("Memory read permission was revoked");
+          await hooks.context!(request); expect(JSON.stringify(request.system)).not.toContain("DISCOVERY_SOURCE");
           expect(store.get<any>("sessions", "session").disabled).toBe("Memory read permission was revoked");
         } else {
           await hooks.context!(request);
           const session = engine.session("session"); expect(session.projectId).toBe("discovered-repo"); expect(session.scopeId).toBe(scopeId);
           expect(session.generation).toBe(mode === "legacy-retired" ? 1 : 0); expect(engine.sources("session", session.generation)).toHaveLength(1);
-          expect(JSON.stringify(request.system)).toContain("DISCOVERY_SOURCE");
+          if (mode === "retained") expect(JSON.stringify(request.system)).toContain("DISCOVERY_SOURCE");
+          else expect(JSON.stringify(request.system)).toContain("unavailable for this entire turn");
           if (snapshot) { engine.validateSnapshot(snapshot); expect(engine.sources("session", 0)[0]!.projectId).toBe("global"); }
           expect(await Bun.file(`${database}.diagnostics.ndjson`).text()).toContain('"event":"scope.discovery_migrated"');
         }

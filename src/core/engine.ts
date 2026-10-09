@@ -264,7 +264,9 @@ export class Engine {
       for (const checkpoint of this.store.all<{ id: string; sessionId: string }>("checkpoints")) if (checkpoint.sessionId === sessionId) this.store.remove("checkpoints", checkpoint.id);
       this.store.remove("adapterErrors", sessionId);
       for (const row of this.store.db.query("SELECT id,value FROM entities WHERE bucket='checkpointAliases'").all() as { id: string; value: string }[]) if (JSON.parse(row.value).sessionId === sessionId) this.store.remove("checkpointAliases", row.id);
-      if (mode === "delete") this.store.remove("forks", sessionId);
+      if (mode === "delete") {
+        this.store.remove("forks", sessionId); this.store.remove("nativeActive", sessionId); this.store.remove("preparingSessions", sessionId);
+      }
       const retained = this.store.all<Publication>("publications").filter(p => p.scopeId === scope.id && (p.sessionId !== sessionId || retainPublications && p.end <= preserve && preserve > 0)).sort((a, b) => a.publicationSeq - b.publicationSeq).map(p => ({ publication: p, node: this.node(p.nodeId) }));
       const retainedChunks = new Map<string, Node>();
       for (const n of [...prefixNodes, ...retained.map(r => r.node)]) for (const id of n.inputs) {

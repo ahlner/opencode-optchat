@@ -6,6 +6,7 @@ export interface MemoryStatus {
     summaries: number;
     publications: number;
     activeTurns: number;
+    nativeTurns?: number;
     jobs: {
         pending: number;
         running: number;

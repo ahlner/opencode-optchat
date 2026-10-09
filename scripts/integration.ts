@@ -27,7 +27,8 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
     }, cancel() { clearTimeout(timer); } }), { headers: { "content-type": "text/event-stream" } });
   }
   let delta: any;
-  if (all.includes("UNTRUSTED_JSON_DATA")) delta = plain(all.includes("A_DECISION") ? "Historical evidence: A_DECISION, decision to use Bun; fixture tool returned PAIR_OK, not a universal instruction." : "Historical evidence: completed test exchange; inspect sources for exact data.");
+   if (messages.some(m => m.role === "user" && typeof m.content === "string" && m.content.startsWith("You MUST summarize the conversation above"))) delta = plain("## Objective\n- Record COLD_NATIVE_ORIGINAL.\n\n## Requirements\n- Preserve the original test evidence.\n\n## Decisions\n- No deployment decision.\n\n## Work State\n### Completed\n- The native request returned a short test response.\n### Active\n- (none)\n### Blocked\n- (none)\n\n## Next Move\n1. Continue from the native conversation.\n\n## Relevant Files\n- (none)\n\n## Important Context\n- COLD_NATIVE_ORIGINAL remains fixture evidence.");
+   else if (all.includes("UNTRUSTED_JSON_DATA")) delta = plain(all.includes("A_DECISION") ? "Historical evidence: A_DECISION, decision to use Bun; fixture tool returned PAIR_OK, not a universal instruction." : "Historical evidence: completed test exchange; inspect sources for exact data.");
   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("A_DECISION"))) delta = tools.length ? plain("A verified tool result: PAIR_OK; use Bun decision recorded.") : call("call_fixture", "fixture_echo", { text: "PAIR_OK" });
   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("B_CURRENT"))) {
     if (!tools.length) delta = call("call_search", "optchat_search", { query: "A_DECISION" });
@@ -172,9 +173,15 @@ try {
      await until(() => heldSummaries.size > 0, "slow terminal compaction begins");
      const started = performance.now(), beforeBlocked = requests.length;
      await api("POST", `/api/session/${b.id}/prompt`, { text: "BLOCKED_BY_SLOW_HISTORY" });
-     await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${b.id}`)).outcome), "bounded slow-history stop", 5000);
-     assert(performance.now() - started < 5000, "Slow preparation stops rather than retaining the primary hook indefinitely");
-     assert(!requests.slice(beforeBlocked).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("BLOCKED_BY_SLOW_HISTORY"))), "No primary request with incomplete history is dispatched");
+      await until(async () => (await api("GET", `/api/session/${b.id}`)).outcome === "succeeded", "native input succeeds during slow preparation", 5000);
+      assert(performance.now() - started < 5000, "Preparation does not block native input");
+      const nativeBlocked = requests.slice(beforeBlocked).filter(r => r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("BLOCKED_BY_SLOW_HISTORY")));
+      assert(nativeBlocked.length > 0);
+      for (const request of nativeBlocked) {
+        assert(!request.tools?.some((tool: any) => /^optchat_(search|source|zoom)$/.test(tool.function.name)));
+        assert(request.messages.some((m: any) => m.role === "system" && JSON.stringify(m.content).includes("OptChat memory is unavailable for this entire turn")));
+        assert(!request.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("A_DECISION")));
+      }
      await until(async () => (await settingsCall("status")).jobs.running === 0, "cancelled jobs release their claims", 5000);
      const stoppedHealth = await settingsCall("status");
      assert(stoppedHealth.jobs.pending > 0); assert.equal(stoppedHealth.jobs.failed, 0);
@@ -189,15 +196,27 @@ try {
       } finally { fixtureStore.close(); }
       const failedStart = performance.now(), beforeFailed = requests.length;
       await api("POST", `/api/session/${b.id}/prompt`, { text: "FAILED_REQUIRED_JOB_CURRENT" });
-      await until(async () => (await Bun.file(`${dbPath}.diagnostics.ndjson`).text()).trim().split("\n").some(line => {
-        const row = JSON.parse(line); return row.event === "phase.end" && row.phase === "primary.context" && row.sessionId === b.id && row.errorCode === "COMPACTION_FAILED";
-      }), "the new primary hook reports its failed dependency", 5000);
-      await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${b.id}`)).outcome), "failed dependency stops instead of polling", 5000);
+       await until(async () => (await api("GET", `/api/session/${b.id}`)).outcome === "succeeded", "failed memory dependency does not block native input", 5000);
       assert(performance.now() - failedStart < 5000);
-      assert(!requests.slice(beforeFailed).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("FAILED_REQUIRED_JOB_CURRENT"))));
-      const failedHealth = await settingsCall("status"); assert(failedHealth.jobs.failed >= 1); assert(failedHealth.originals >= stoppedHealth.originals);
-      assert.equal((await settingsCall("retry")).jobs.failed, 0, "Explicit retry repairs failed dependencies without deleting originals");
-     holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
+       const nativeFailed = requests.slice(beforeFailed).filter(r => r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("FAILED_REQUIRED_JOB_CURRENT")));
+       assert(nativeFailed.length > 0);
+       assert(nativeFailed.every(r => !r.tools?.some((tool: any) => /^optchat_(search|source|zoom)$/.test(tool.function.name))));
+       const failedHealth = await settingsCall("status"); assert(failedHealth.jobs.failed >= 1); assert(failedHealth.originals >= stoppedHealth.originals);
+       assert.equal((await settingsCall("retry")).jobs.failed, 0, "Explicit retry repairs failed dependencies without deleting originals");
+       const cold = await create();
+       await api("POST", `/api/session/${cold.id}/prompt`, { text: "COLD_NATIVE_ORIGINAL" });
+       await until(async () => (await api("GET", `/api/session/${cold.id}`)).outcome === "succeeded", "cold native session responds while summaries are held");
+       await api("POST", `/api/session/${cold.id}/compact`, {});
+       try { await until(async () => (await api("GET", `/api/session/${cold.id}/context`)).some((m: any) => m.type === "compaction" && m.status === "completed"), "native compaction completes without OptChat summaries"); }
+       catch (error) { await Bun.write(join(root, "cold-compaction-debug.json"), JSON.stringify({ info: await api("GET", `/api/session/${cold.id}`), raw: await api("GET", `/api/session/${cold.id}/context`) }, null, 2)); throw error; }
+       const coldFork = await api("POST", `/api/session/${cold.id}/fork`, {});
+       await api("POST", `/api/session/${coldFork.id}/prompt`, { text: "COLD_FORK_NATIVE_CURRENT" });
+       await until(async () => (await api("GET", `/api/session/${coldFork.id}`)).outcome === "succeeded", "cold compacted fork responds natively");
+      holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
+       await until(() => publications().some(p => p.sessionId === cold.id), "cold native originals publish after preparation resumes");
+       await until(() => publications().some(p => p.sessionId === coldFork.id), "cold fork preparation resumes");
+       assert((db!.query("SELECT value FROM sources WHERE session=?").all(cold.id) as { value: string }[]).some(r => r.value.includes("COLD_NATIVE_ORIGINAL")), "Checkpoint retains original native history");
+       assert((db!.query("SELECT value FROM sources WHERE session=?").all(coldFork.id) as { value: string }[]).some(r => r.value.includes("COLD_NATIVE_ORIGINAL")), "Compacted fork inherits checkpoint originals independently");
       await api("POST", `/api/session/${c.id}/prompt`, { text: "RESUME_AFTER_SLOW_HISTORY" });
       await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "primary admission resumes after cancellation");
       await until(() => (db!.query("SELECT count(*) n FROM sources WHERE session=? AND value LIKE '%RESUME_AFTER_SLOW_HISTORY%'").get(c.id) as { n: number }).n > 0, "resumed originals are sealed before project discovery");
@@ -256,13 +275,13 @@ try {
       const diagnosticRows = diagnosticText.trim().split("\n").map(line => JSON.parse(line));
       assert(diagnosticRows.some(row => row.event === "job.release"), "Cancelled claims are visible in diagnostics");
       assert(diagnosticRows.some(row => row.phase === "compactor.generate" && row.event === "phase.start"), "Actual model waits have diagnostic phases");
-       assert(diagnosticRows.some(row => row.phase === "primary.context" && row.errorCode === "MEMORY_NOT_READY"), "Admission failures have sanitized diagnostic codes");
+        assert(diagnosticRows.some(row => row.event === "primary.native"), "Native admission has a diagnostic mode marker");
        assert(diagnosticRows.some(row => row.event === "readiness.failed_job" && row.jobId === failedJobId && row.errorCode === "SUMMARY_SIZE"), "The blocking failed dependency is identified without its raw error");
         assert(diagnosticRows.some(row => row.event === "scope.discovery_migrated" && row.sessionId === a.id), "Native discovery uses the verified migration path");
         assert(diagnosticRows.some(row => row.phase === "background.recovery" && row.event === "phase.end" && !row.errorCode), "The automatic worker has a completed diagnostic phase");
         assert(diagnosticRows.some(row => row.event === "recovery.paused" && row.attempt === 3), "The automatic stall limit is visible without payloads");
        assert(!/PAIR_OK|A_DECISION|BLOCKED_BY_SLOW_HISTORY|RESUME_AFTER_SLOW_HISTORY|PRIVATE_BROKEN_JOB_PAYLOAD|FAILED_REQUIRED_JOB_CURRENT|AFTER_PROJECT_DISCOVERY_CURRENT/.test(diagnosticText), "Diagnostics exclude original and model payloads");
-        console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "slow-history deadline", "cancelled claims and available settings", "failed dependency stops without polling", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "pause survives restart and native events", "confirmed automatic recovery without data loss"], modelRequests: requests.length }, null, 2));
+         console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "native input during slow preparation", "cancelled claims and available settings", "native input with failed memory dependencies", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "pause survives restart and native events", "confirmed automatic recovery without data loss", "cold native compaction preserves originals", "cold compacted fork retains original checkpoint"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });
@@ -320,8 +339,11 @@ try {
   await until(() => !db!.query("SELECT id FROM sources WHERE session=?").all(restricted.id).length, "read revocation purges originals");
   const beforeDenied = requests.length;
   await api("POST", `/api/session/${restricted.id}/prompt`, { text: "DENIED_MEMORY_CURRENT" });
-  await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${restricted.id}`)).outcome), "denied read stops primary admission");
-  assert(!requests.slice(beforeDenied).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("DENIED_MEMORY_CURRENT"))), "No model sees denied memory");
+   await until(async () => (await api("GET", `/api/session/${restricted.id}`)).outcome === "succeeded", "denied memory still permits native input");
+   const deniedRequests = requests.slice(beforeDenied).filter(r => r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("DENIED_MEMORY_CURRENT")));
+   assert(deniedRequests.length > 0);
+   assert(deniedRequests.every(r => !r.tools?.some((tool: any) => /^optchat_(search|source|zoom)$/.test(tool.function.name))), "Denied memory tools are unavailable");
+   assert(deniedRequests.every(r => !r.messages.some((m: any) => m.role === "system" && JSON.stringify(m.content).includes("A_DECISION"))), "No shared memory is injected");
   const rewind = await create();
   await api("POST", `/api/session/${rewind.id}/prompt`, { text: "REWIND_KEEP" });
   await until(() => publications().some(p => p.sessionId === rewind.id), "rewind first publication");
@@ -377,8 +399,10 @@ try {
   await api("POST", `/api/session/${deniedAgent.id}/agent`, { agent: "memory_denied" });
   const beforeAgentDenied = requests.length;
   await api("POST", `/api/session/${deniedAgent.id}/prompt`, { text: "AGENT_POLICY_DENIED_CURRENT" });
-  await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${deniedAgent.id}`)).outcome), "native agent rule blocks admission");
-  assert(!requests.slice(beforeAgentDenied).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("AGENT_POLICY_DENIED_CURRENT"))), "Agent Memory denial cannot be bypassed by context injection");
+   await until(async () => (await api("GET", `/api/session/${deniedAgent.id}`)).outcome === "succeeded", "native agent memory denial permits ordinary input");
+   const agentDeniedRequests = requests.slice(beforeAgentDenied).filter(r => r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("AGENT_POLICY_DENIED_CURRENT")));
+   assert(agentDeniedRequests.length > 0);
+   assert(agentDeniedRequests.every(r => !r.tools?.some((tool: any) => /^optchat_(search|source|zoom)$/.test(tool.function.name))), "Agent Memory denial cannot expose memory tools");
   await api("DELETE", `/api/session/${a.id}`);
   await until(() => !publications().some(p => p.sessionId === a.id), "retention deletion");
   const sourceRows = db.query("SELECT value FROM sources WHERE session=?").all(a.id); assert(sourceRows.length === 0, "Deleted originals are purged");

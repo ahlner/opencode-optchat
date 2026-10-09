@@ -27,6 +27,14 @@ describe("terminal memory status", () => {
     expect(statusIndicator(status).tone).toBe("error");
     status.jobs.expired = 0; status.jobs.failed = 1;
     expect(statusIndicator(status).text).toBe("OptChat: error");
+    status.nativeTurns = 1;
+    expect(statusIndicator(status).text).toBe("OptChat: native · failed");
+    status.jobs.failed = 0; status.jobs.running = 1;
+    expect(statusIndicator(status).text).toBe("OptChat: native · preparing 1");
+    status.jobs.running = 0; delete status.lastError;
+    expect(statusIndicator(status).text).toBe("OptChat: native · queued 2");
+    status.jobs.pending = 0;
+    expect(statusIndicator(status).text).toBe("OptChat: native");
     status.enabled = false;
     expect(statusIndicator(status)).toEqual({ text: "OptChat: off", tone: "muted" });
   });

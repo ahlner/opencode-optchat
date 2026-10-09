@@ -49,13 +49,18 @@ The indicator does not start compaction or make model calls.
 - `off`: Memory ingestion is disabled.
 - `ready`: OptChat is enabled with no active turns or pending jobs.
 - `active`: At least one memory turn is active.
+- `native`: A session has a native-turn marker. That turn has no OptChat memory tools.
 - `processing N`: N jobs have worker claims. This does not prove that the provider is responding.
 - `queued N`: N jobs await a worker. No job currently has a worker claim.
 - `paused`: Automatic preparation stopped after three consecutive attempts without durable progress.
 - `error`: At least one compactor job failed or has an expired lease.
 - `unavailable`: The status request failed or no Location is available.
 
-The indicator gives failed or expired jobs priority over active processing.
+The native indicator can include preparation, queue, pause, or failure details.
+Its count covers the current database, not only the visible session.
+Markers remain until terminal reconciliation or a later successful memory admission.
+
+Otherwise, the indicator gives failed or expired jobs priority over active processing.
 It ignores historical error codes when no failed or expired jobs remain.
 It does not certify summary accuracy or session authorization.
 
@@ -74,14 +79,16 @@ It resumes released jobs without requiring another prompt or agent event.
 It skips live worker claims and failed jobs.
 Each attempt retains the configured preparation deadline.
 
-New primary requests interrupt the background attempt before starting their own bounded preparation.
+New primary requests do not wait for background summary calls.
+If complete memory is unavailable, the request uses native mode for its entire turn.
+
 Durable original, summary, or completed-job progress resets the consecutive-stall counter.
 Three attempts without progress pause automatic preparation until you confirm **Retry failed compaction**.
 The pause survives a service restart. Background requests can incur model costs.
 Cancellation cannot reverse charges for requests that the provider already received.
 
 Agent and terminal events do not bypass the pause.
-A new primary prompt can still make its own bounded preparation attempt.
+A new primary prompt checks available memory without generating summaries.
 
 The adapter permits one unexpired compactor job per database, across worker connections.
 It retries explicit rate limits at most three times after the initial request.
@@ -97,10 +104,10 @@ A worker that another worker or retention change replaced discards its result.
 It does not fail the replacement job or publish stale evidence.
 
 `MEMORY_NOT_READY` means that required durable summaries are missing.
-The adapter waits within the admission deadline instead of permanently disabling the session.
-If the deadline expires, the request stops without deleting its history.
+New turns use native mode instead of waiting for missing summaries.
+Previously admitted memory turns retain their pinned snapshot and stop if validation fails.
 Startup recovers the exact readiness error that earlier versions incorrectly stored as a permanent disable.
-Permission revocations and uncertain original mappings remain blocked.
+Permission revocations and uncertain original mappings block OptChat memory, not ordinary native conversation.
 Recovery cannot recreate originals that neither the host nor a retained checkpoint exposes.
 
 ### Diagnostic logging
@@ -134,12 +141,21 @@ Logs contain private activity metadata. Review them before sharing them publicly
 
 ### Existing sessions and preparation limits
 
-Enabling memory in an existing session can require many summary calls before the first primary model request.
-Current reconciliation still processes historical turns before admission.
-The adapter does not yet provide a separate preparation workflow with a model-call budget and progress controls.
-Do not treat installation success or small-session tests as evidence of acceptable large-session startup latency.
+Enabling memory in an existing session can require many background summary calls.
+Primary admission never generates summaries or waits for this backfill.
+The adapter checks host metadata for at most one second before selecting a new turn's mode.
 
-The admission deadline now cancels local preparation waits and sends an abort signal to the provider.
+Native mode preserves the host's own conversation and complete tool protocol.
+It adds an explicit memory-unavailable notice and removes OptChat memory tools.
+It never injects partial shared memory or changes mode during a turn.
+Once preparation finishes, a later turn can use complete, snapshot-pinned OptChat memory.
+An already admitted memory turn cannot fall back to native mode.
+
+This explicit native mode differs from the paper's strict admission-stop policy.
+It is not a complete OptChat view or a claim of cross-session awareness.
+The background workflow still has no total archive-cost budget.
+
+The background deadline cancels local preparation waits and sends an abort signal to the provider.
 Cancelled jobs return to the pending queue through their matching fences.
 Completed originals and summaries remain stored. Late provider responses cannot commit cancelled results.
 A provider can still charge for an already submitted request despite cancellation.

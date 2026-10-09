@@ -27,6 +27,7 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
   summaries: counts,
   publications: counts,
   activeTurns: counts,
+  nativeTurns: counts,
   lastError: { type: "string" },
   jobs: {
     type: "object",
@@ -83,11 +84,12 @@ Sessions: ${status.sessions}
 Originals: ${status.originals}
 Summaries: ${status.summaries}
 Publications: ${status.publications}
-Active turns: ${status.activeTurns}
+Active memory turns: ${status.activeTurns}
+Native turn markers: ${status.nativeTurns ?? 0}
 Jobs: ${JSON.stringify(status.jobs)}
 Last error: ${status.lastError ?? "none"}
 Diagnostics: ${draft.database}.diagnostics.ndjson
-Status does not certify summary accuracy.` });
+Counts cover this database. Status does not certify summary accuracy.` });
       } else if (field === "retry") {
         if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs and clears a background pause without deleting originals. Automatic preparation can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
           await rpc.retry({}, options);
@@ -136,6 +138,10 @@ import { createSignal, onCleanup, onMount } from "solid-js";
 function statusIndicator(status) {
   if (!status.enabled)
     return { text: "OptChat: off", tone: "muted" };
+  if (status.nativeTurns) {
+    const preparation = status.jobs.failed ? "failed" : status.jobs.running ? `preparing ${status.jobs.running}` : status.jobs.pending && status.lastError === "BACKGROUND_PAUSED" ? "paused" : status.jobs.pending ? `queued ${status.jobs.pending}` : "";
+    return { text: `OptChat: native${preparation ? ` \xB7 ${preparation}` : ""}`, tone: "warning" };
+  }
   if (status.jobs.failed || status.jobs.expired)
     return { text: "OptChat: error", tone: "error" };
   if (status.jobs.running)
@@ -246,4 +252,4 @@ export {
   tui_default as default
 };
 
-//# debugId=806A894E6B19024164756E2164756E21
+//# debugId=76597E0E96DE53F264756E2164756E21

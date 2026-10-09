@@ -515,8 +515,11 @@ class Engine {
       for (const row of this.store.db.query("SELECT id,value FROM entities WHERE bucket='checkpointAliases'").all())
         if (JSON.parse(row.value).sessionId === sessionId)
           this.store.remove("checkpointAliases", row.id);
-      if (mode === "delete")
+      if (mode === "delete") {
         this.store.remove("forks", sessionId);
+        this.store.remove("nativeActive", sessionId);
+        this.store.remove("preparingSessions", sessionId);
+      }
       const retained = this.store.all("publications").filter((p) => p.scopeId === scope.id && (p.sessionId !== sessionId || retainPublications && p.end <= preserve && preserve > 0)).sort((a, b) => a.publicationSeq - b.publicationSeq).map((p) => ({ publication: p, node: this.node(p.nodeId) }));
       const retainedChunks = new Map;
       for (const n of [...prefixNodes, ...retained.map((r) => r.node)])
@@ -872,4 +875,4 @@ export {
   turnKey
 };
 
-//# debugId=6A54D52FED25D7C164756E2164756E21
+//# debugId=1648083BB12EE8CE64756E2164756E21

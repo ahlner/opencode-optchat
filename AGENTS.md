@@ -76,6 +76,14 @@ Background preparation uses the existing serialized queue and claim fences.
 Skip failed jobs and live worker claims.
 Interrupt background work for primary admission.
 
+Primary admission must not generate summaries or wait for backfill.
+Select native mode when complete memory is unavailable for a new turn.
+Preserve the native conversation and tool protocol. Remove memory tools and add an explicit unavailable notice.
+
+Keep native mode through all continuations. Never downgrade an admitted memory turn or change its pinned snapshot.
+Stop an admitted memory turn when authorization or snapshot validation fails.
+Record this deliberate difference from the paper's strict admission-stop policy.
+
 Persist the shared stall counter and pause after three attempts without durable progress.
 Native events must not bypass the pause. Confirmed retry can clear it without deleting originals.
 Treat `BACKGROUND_PAUSED` as an operational state, never as a reason to retire history.

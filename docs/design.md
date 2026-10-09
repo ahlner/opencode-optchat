@@ -45,7 +45,8 @@ This keeps compaction jobs with the provider configured for that scope.
 
 The enabled adapter checks pending preparation once per second through its existing serialized queue.
 It skips failed jobs and unexpired worker claims.
-A primary request interrupts the background attempt and retains its own admission deadline.
+A new primary request uses native mode if background work prevents immediate memory admission.
+An admitted memory continuation can interrupt background work to validate its pinned snapshot.
 Cancelled results remain subject to the existing lease fence checks.
 
 The worker measures durable progress through original, summary, and completed-job counts.
@@ -128,16 +129,24 @@ The adapter respects provider delays up to 30 seconds. Longer delays leave the j
 Existing failed jobs still require an operator retry.
 
 `MEMORY_NOT_READY` means a required complete prefix or suitable durable projection is missing.
-The adapter waits at most `waitMs`.
+New primary admission checks host metadata for at most `min(waitMs, 1000)` milliseconds.
+It does not generate summaries.
+Missing memory selects an explicit native mode for the complete turn.
+Native mode preserves host messages and tool pairs, removes memory tools, and adds a fixed unavailable notice.
+It cannot become memory mode during a continuation.
 
-The same deadline limits serialized preparation, model calls, retry delays, and host metadata waits.
+Memory admission and context assembly share one SQLite transaction.
+Failed assembly cannot leave an unfinished memory turn or snapshot behind.
+Already admitted memory turns retain their snapshot and stop on invalidation instead of changing modes.
+
+The background `waitMs` deadline limits serialized preparation, model calls, retry delays, and host metadata waits.
 An expired primary request cannot execute its queued preparation later.
 Cancellation returns only the worker's matching claim to the pending queue and increments its fence.
 Intermediate durable summaries remain available for a later attempt.
 The worker discards late provider responses even if the provider ignores cancellation.
 
-These bounds do not remove historical reconciliation from primary admission.
-Large-session initialization still needs a separate controlled preparation workflow.
+Historical summary generation runs outside primary admission.
+Background initialization still needs a total archive-cost budget.
 Provider-side work and charges can continue after an abort signal.
 
 `ACTIVE_TURN_TOO_LARGE` stops the request explicitly.
@@ -168,7 +177,8 @@ An edit or rewind preserves the unchanged prefix before the first affected turn.
 The core migrates its sources, nodes, and publications to a new generation.
 Publication sequence numbers remain unchanged.
 The core revokes the affected turn and its following suffix.
-A staged rewind blocks admission until the host commits or clears it.
+A staged rewind blocks memory admission until the host commits or clears it.
+Ordinary native conversation remains subject to the host's own rewind rules.
 
 ## Host lifecycle
 

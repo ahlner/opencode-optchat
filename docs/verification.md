@@ -1,5 +1,57 @@
 # Verification
 
+## Native input during incomplete preparation
+
+The operator reported that enabled memory prevented ordinary input from reaching the model.
+Earlier deadline and recovery corrections did not remove summary generation from primary admission.
+This correction separates new-turn mode selection from background summary generation.
+
+New turns inspect host metadata for at most one second and generate no summaries during admission.
+Unavailable memory selects explicit native mode with unchanged own messages and tool pairs.
+That mode removes memory tools and adds a fixed unavailable notice.
+It never exposes partial shared memory or changes mode during a continuation.
+An already admitted memory turn instead retains its snapshot and stops if validation fails.
+
+This is a deliberate difference from the paper's strict admission-stop policy.
+Native mode does not claim complete OptChat coverage or cross-session awareness.
+Background work can still incur costs and pause after repeated stalls.
+
+Verification completed with these results:
+
+- `bun run check`: 87 tests, 11,878 assertions, TypeScript checks, and nine original Markdown files passed.
+- Packed-package exports and TypeScript consumer passed.
+- Packed lifecycle integration passed 23 groups with 276 loopback requests in `optchat-integration-mpRplj`.
+- Packed settings integration passed 25 groups with 157 loopback requests in `optchat-integration-qAhkxM`.
+- Native TUI passed six checks without model calls in `optchat-tui-EqcOxf`.
+- License checks passed for 428 installed package instances without bundled third-party source files.
+
+The settings fixture holds summary responses while ordinary requests complete successfully.
+It also checks native input with failed dependencies, independent background recovery, and preserved originals through cold native compaction and forks.
+The unit tests check stable native continuations and prohibit fallback from an already admitted memory turn.
+
+The authorized managed-service test used `edenai/databricks/databricks-gpt-5-4-mini` in two new sessions.
+It seeded native history before activation and held auxiliary summaries during a continuation.
+The continuation completed in 942 milliseconds with its own history, an unavailable notice, and no memory tools.
+After complete preparation, a separate turn retrieved the exact original tool result from the other session.
+It returned retry value `92126`, failure code `E_TEST_513ff29f9e`, counts `23/0`, and proposal `P_513ff29f9e` as unimplemented.
+
+Saved reports are in `optchat-real-host-oJjEhR/cold-report.json` and `optchat-real-host-oJjEhR/report.json` under the reported private temporary directory.
+The report observed 23 completed summary calls and three primary calls for the retrieval turn.
+These counts do not establish total cost or general semantic accuracy.
+The test did not alter existing user sessions or configuration.
+
+The first real trial, `optchat-real-host-beBA3e`, passed its blocked-preparation continuation in 919 milliseconds.
+Its later session started before all preparation finished, correctly remained native, and answered `unknown` instead of inventing shared facts.
+The unchanged semantic verifier rejected that answer.
+The harness now waits for complete preparation before testing a separate memory-enabled turn.
+
+Cold native compaction first failed because the loopback model returned text without the host's required summary headings.
+The fixture now returns the required native structure.
+This does not relax original retention, fork isolation, or semantic source checks.
+
+These controlled tests reproduce blocked auxiliary work, not the operator's entire individual session.
+Real diagnostic logs remain necessary to confirm the updated behavior in that session.
+
 ## Admission cancellation after a reported session hang
 
 The operator reported activity without a primary response after enabling the plugin in an existing session.

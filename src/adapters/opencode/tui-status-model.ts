@@ -7,6 +7,11 @@ export interface StatusIndicator {
 
 export function statusIndicator(status: MemoryStatus): StatusIndicator {
   if (!status.enabled) return { text: "OptChat: off", tone: "muted" };
+  if (status.nativeTurns) {
+    const preparation = status.jobs.failed ? "failed" : status.jobs.running ? `preparing ${status.jobs.running}`
+      : status.jobs.pending && status.lastError === "BACKGROUND_PAUSED" ? "paused" : status.jobs.pending ? `queued ${status.jobs.pending}` : "";
+    return { text: `OptChat: native${preparation ? ` · ${preparation}` : ""}`, tone: "warning" };
+  }
   if (status.jobs.failed || status.jobs.expired) return { text: "OptChat: error", tone: "error" };
   if (status.jobs.running) return { text: `OptChat: processing ${status.jobs.running}`, tone: "warning" };
   if (status.jobs.pending && status.lastError === "BACKGROUND_PAUSED") return { text: "OptChat: paused", tone: "warning" };

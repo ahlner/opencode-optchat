@@ -20,7 +20,7 @@ const schema = {
 const counts = { type: "integer", minimum: 0 } as const;
 const statusSchema = { type: "object", additionalProperties: false, properties: {
   enabled: { type: "boolean" }, databaseExists: { type: "boolean" }, sessions: counts, originals: counts, summaries: counts,
-  publications: counts, activeTurns: counts, lastError: { type: "string" }, jobs: { type: "object", additionalProperties: false,
+  publications: counts, activeTurns: counts, nativeTurns: counts, lastError: { type: "string" }, jobs: { type: "object", additionalProperties: false,
     properties: { pending: counts, running: counts, expired: counts, failed: counts, done: counts, revoked: counts },
     required: ["pending", "running", "expired", "failed", "done", "revoked"] },
 }, required: ["enabled", "databaseExists", "sessions", "originals", "summaries", "publications", "activeTurns", "jobs"] } as const;

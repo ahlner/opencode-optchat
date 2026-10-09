@@ -41,7 +41,7 @@ The tests do not establish support for other operating systems or providers.
 | Lease recovery after suspension | Event-loop blocking, unchanged-fence recovery, stale-worker rejection, and retention revocation |
 | Slow preparation cancellation | Non-cooperative model fixture, released claims, available settings, and resumed native admission |
 | Automatic preparation continuation | Timer resumes a released job without another native prompt or event. Failed jobs require confirmed retry |
-| Large existing-session activation latency | Not established. Initial reconciliation still runs before primary admission |
+| Cold existing-session input | Native mode preserves own history while summaries remain unavailable. Admission does not generate summaries |
 
 Support applies only to the checked V2 boundaries.
 The adapter rejects a foreign compaction marker without an original checkpoint.
@@ -69,7 +69,10 @@ See [verification](verification.md) for the separate real host case.
 ## Host boundaries
 
 The host can call `prompt` repeatedly before admission.
-The adapter therefore fixes the snapshot at the first primary `context` hook.
+The adapter selects native or memory mode at the first primary `context` hook.
+Memory mode fixes a complete snapshot. Native mode exposes no OptChat tools or shared summaries.
+The selected mode remains fixed through all continuations of that turn.
+
 Original message identifiers and host idle boundaries identify the active segment.
 The adapter retains the complete suffix, including tool results without message identifiers.
 
@@ -82,7 +85,8 @@ The V2 interface provides `session.context`.
 The used domain does not provide a complete replay API for original events.
 The adapter therefore stores originals before native compaction.
 A synthetic host summary never replaces originals.
-The adapter explicitly stops compaction within an active turn.
+The adapter explicitly stops compaction within an admitted memory turn.
+Native-mode compaction can use the host summarizer while durable checkpoints retain originals.
 
 Forks receive independent original copies of an exactly checked prefix.
 New host message identifiers are permitted.

@@ -242,12 +242,17 @@ The packed plugin passed 23 lifecycle and 12 settings integration groups.
 The native terminal opened the status dialog without a model prompt.
 These tests did not activate or inspect the user's removed plugin.
 
+The public Git revision `54239bc65fcf117b551dce47b8c97b0ffea9fed6` also passed the native status dialog and all 23 lifecycle groups.
+Both tests used fresh private caches. The terminal test made no model calls.
+
 Diagnostics:
 
 ```text
 /var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-1WLJXO
 /var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-YjG7Rc
 /var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-IzO9Aw
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-5IIrBT
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-g2xRsw
 ```
 
 ## Limits of the evidence

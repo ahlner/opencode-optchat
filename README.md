@@ -49,7 +49,9 @@ The indicator does not start compaction or make model calls.
 - `off`: Memory ingestion is disabled.
 - `ready`: OptChat is enabled with no active turns or pending jobs.
 - `active`: At least one memory turn is active.
-- `processing N`: The compactor has N pending or running jobs.
+- `processing N`: N jobs have worker claims. This does not prove that the provider is responding.
+- `queued N`: N jobs await a worker. No job currently has a worker claim.
+- `paused`: Automatic preparation stopped after three consecutive attempts without durable progress.
 - `error`: At least one compactor job failed or has an expired lease.
 - `unavailable`: The status request failed or no Location is available.
 
@@ -64,8 +66,22 @@ The status does not expose original payloads or certify summary accuracy.
 
 Finish or interrupt active turns before selecting **Retry failed compaction**.
 Confirm the possible model costs.
-This action requeues failed jobs and preserves originals.
-Processing resumes on the next session reconciliation. It does not activate a disabled adapter.
+This action requeues failed jobs, clears a background pause, and preserves originals.
+The enabled adapter resumes pending preparation automatically. This action does not activate a disabled adapter.
+
+While enabled, the adapter checks for pending preparation once per second.
+It resumes released jobs without requiring another prompt or agent event.
+It skips live worker claims and failed jobs.
+Each attempt retains the configured preparation deadline.
+
+New primary requests interrupt the background attempt before starting their own bounded preparation.
+Durable original, summary, or completed-job progress resets the consecutive-stall counter.
+Three attempts without progress pause automatic preparation until you confirm **Retry failed compaction**.
+The pause survives a service restart. Background requests can incur model costs.
+Cancellation cannot reverse charges for requests that the provider already received.
+
+Agent and terminal events do not bypass the pause.
+A new primary prompt can still make its own bounded preparation attempt.
 
 The adapter permits one unexpired compactor job per database, across worker connections.
 It retries explicit rate limits at most three times after the initial request.
@@ -301,7 +317,7 @@ bun run admin retry /ABSOLUTE/PATH/memory.sqlite
 
 A failed job never becomes an invented summary.
 `retry` schedules another attempt.
-The configured adapter executes that attempt during the next request.
+The enabled adapter executes pending work automatically or during the next request.
 
 Preparation now stops immediately when a required summary job has failed.
 Select a working compactor model before selecting **Retry failed compaction** in **OptChat settings**.

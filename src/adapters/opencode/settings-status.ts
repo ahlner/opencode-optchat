@@ -30,7 +30,10 @@ export function memoryStatus(database: string, enabled: boolean): MemoryStatus {
         if (row.status in status.jobs) status.jobs[row.status as keyof typeof status.jobs] = row.count;
       status.jobs.expired = (db.query("SELECT count(*) AS count FROM jobs WHERE status='running' AND leaseUntil<=?").get(Date.now()) as { count: number }).count;
       const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get() as { code: string } | null;
-      if (error) status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
+      if (error) status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
+      const paused = count("SELECT count(*) AS count FROM entities WHERE bucket='settings' AND id='backgroundRecovery' AND json_extract(value,'$.paused')=1");
+      if (status.lastError === "BACKGROUND_PAUSED" && !paused) delete status.lastError;
+      if (status.jobs.pending && paused) status.lastError = "BACKGROUND_PAUSED";
       return status;
     })();
   } finally { db.close(); }
@@ -42,5 +45,6 @@ export function retryMemoryJobs(database: string) {
     insist(store.all<Turn>("turns").every(t => t.outcome), "SETTINGS_BUSY", "Finish or interrupt active turns before retrying compaction");
     store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run();
     store.db.query("DELETE FROM entities WHERE bucket='adapterErrors'").run();
+    store.remove("settings", "backgroundRecovery");
   }); } finally { store.close(); }
 }

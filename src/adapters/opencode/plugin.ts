@@ -10,6 +10,7 @@ import { compactorRequest } from "./compactor-request.ts";
 import { abortable } from "../../core/abort.ts";
 import { Diagnostics } from "./diagnostics.ts";
 import { automaticScope, sameDirectory } from "./settings-scope.ts";
+import { createRecoveryLoop } from "./recovery-loop.ts";
 
 interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
@@ -59,7 +60,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event)) activeJob = undefined;
   } }), retrieval = new Retrieval(engine);
   let tail: Promise<unknown> = Promise.resolve(), stopped = false, operationSignal: AbortSignal | undefined;
-  let queued = 0, activeOperation: number | undefined;
+  let queued = 0, activeOperation: number | undefined, activePhase: string | undefined;
   const operation = <T>(fn: () => Promise<T>, phase = "host.request") => diagnostics.span(phase, () => abortable(fn, operationSignal), { parentId: activeOperation });
   const serial = <T>(fn: () => Promise<T>, parent?: AbortSignal, phase = "queue.operation", details: { sessionId?: string; eventType?: string } = {}): Promise<T> => {
     const waiting = diagnostics.begin("queue.wait", { ...details, queued: ++queued }), queuedAt = performance.now();
@@ -67,12 +68,13 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       waiting.end(); --queued;
       const span = diagnostics.begin(phase, { ...details, parentId: waiting.operationId, queued, queueMs: Math.round(performance.now() - queuedAt) });
       activeOperation = span.operationId;
+      activePhase = phase;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
       operationSignal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
       try { operationSignal.throwIfAborted(); return await fn(); }
       catch (error) { span.end(error); throw error; }
-      finally { span.end(); clearTimeout(timer); operationSignal = undefined; activeOperation = undefined; }
+      finally { span.end(); clearTimeout(timer); operationSignal = undefined; activeOperation = undefined; activePhase = undefined; }
     });
     tail = result.catch(() => {});
     if (parent) {
@@ -84,6 +86,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   };
   const compact = async () => {
     try {
+      insist(activePhase === "primary.context" || !store.get<{ paused: boolean }>("settings", "backgroundRecovery")?.paused,
+        "BACKGROUND_PAUSED", "Automatic preparation paused without progress. Confirm Retry failed compaction to resume. Originals remain retained.");
       // Polling and unrelated model calls cannot repair a failed retained dependency.
       for (const session of store.all<Session>("sessions")) if (!session.disabled && session.scopeId === config.scopeId && engine.preparationStatus(session.id).failed) {
         throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
@@ -91,7 +95,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       await diagnostics.span("compactor.drain", () => engine.drain(100000, operationSignal), { parentId: activeOperation });
     } catch (error) {
       if (operationSignal?.aborted) throw operationSignal.reason;
-      if (error instanceof MemoryError && error.code === "COMPACTION_FAILED") throw error;
+      if (error instanceof MemoryError && ["COMPACTION_FAILED", "BACKGROUND_PAUSED"].includes(error.code)) throw error;
       throw new MemoryError("COMPACTION_FAILED", String(error));
     }
   };
@@ -104,7 +108,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (s) { s.disabled = reason; store.set("sessions", id, s); }
   };
   const reconciliationFailure = (id: string, reason: string, error: unknown) => {
-    if (!(error instanceof MemoryError) || ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
+    if (!(error instanceof MemoryError) || ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
       store.set("adapterErrors", id, { code: error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE", timestamp: new Date().toISOString() });
       return; // Operational and readiness errors do not revoke history or native permissions.
     }
@@ -289,8 +293,38 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       }
     }
   };
+  const recovery = createRecoveryLoop({
+    busy: () => stopped || queued > 0 || activeOperation !== undefined,
+    snapshot: () => {
+      const counts = store.db.query("SELECT sum(status='pending') pending,sum(status='running') running,sum(status='running' AND leaseUntil<=?) expired,sum(status='failed') failed,sum(status='done') done FROM jobs").get(Date.now()) as Record<string, number | null>;
+      let reclaimable = counts.expired ?? 0;
+      const owners = store.db.query("SELECT ownerPid,count(*) n FROM jobs WHERE status='running' AND leaseUntil>? AND ownerPid IS NOT NULL GROUP BY ownerPid").all(Date.now()) as { ownerPid: number; n: number }[];
+      for (const { ownerPid, n } of owners) if (Number.isSafeInteger(ownerPid) && ownerPid > 1) {
+        try { process.kill(ownerPid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") reclaimable += n; }
+      }
+      const records = store.db.query("SELECT (SELECT count(*) FROM nodes)+(SELECT count(*) FROM sources) n").get() as { n: number };
+      const state = store.get<{ paused?: boolean; stalls?: number }>("settings", "backgroundRecovery");
+      return { pending: counts.pending ?? 0, running: counts.running ?? 0, expired: reclaimable, failed: counts.failed ?? 0,
+        progress: (counts.done ?? 0) + records.n, paused: !!state?.paused, attempts: state?.stalls ?? 0 };
+    },
+    run: signal => serial(async () => {
+      try { await reconcileKnown(); await compact(); }
+      catch (error) { diagnostics.emit("recovery.error", { errorCode: error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE" }); throw error; }
+    }, signal, "background.recovery"),
+    pause: () => { store.set("settings", "backgroundRecovery", { paused: true }); diagnostics.emit("recovery.paused", { attempt: 3 }); },
+    completed: madeProgress => {
+      const attempts = store.transaction(() => {
+        if (madeProgress) { store.remove("settings", "backgroundRecovery"); return 0; }
+        const attempts = (store.get<{ stalls?: number }>("settings", "backgroundRecovery")?.stalls ?? 0) + 1;
+        store.set("settings", "backgroundRecovery", { stalls: attempts, paused: attempts >= 3 }); return attempts;
+      });
+      if (attempts >= 3) diagnostics.emit("recovery.paused", { attempt: attempts });
+    },
+    reset: () => store.remove("settings", "backgroundRecovery"),
+  });
   await ctx.session.hook("context", async event => {
     diagnostics.emit("primary.received", { sessionId: event.sessionID });
+    recovery.interrupt(); // Give the primary request its own bounded preparation window.
     const deadline = Date.now() + waitMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
@@ -315,7 +349,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
            assembling = true;
            const result = await diagnostics.span("context.assemble", async () => assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } }), { parentId: activeOperation, sessionId: event.sessionID });
           const previousError = store.get<{ code: string }>("adapterErrors", event.sessionID);
-           if (previousError && ["MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code)) store.remove("adapterErrors", event.sessionID);
+           if (previousError && ["MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code)) store.remove("adapterErrors", event.sessionID);
           return result;
         } catch (error) {
            if (operationSignal?.aborted || !(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline) throw error;
@@ -395,6 +429,6 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     }
    })().catch(error => { if (!stopped) { for (const s of store.all<Session>("sessions")) reconciliationFailure(s.id, `Event stream failed: ${String(error)}`, error); } });
   diagnostics.emit("runtime.ready");
-  return async () => { diagnostics.emit("shutdown.request"); stopped = true; controller.abort(); await events; await tail; diagnostics.close(); store.close(); };
+  return async () => { diagnostics.emit("shutdown.request"); stopped = true; controller.abort(); await recovery.dispose(); await events; await tail; diagnostics.close(); store.close(); };
 } });
 export default Plugin.define({ id: "optchat.memory", setup: ctx => setupSettings(ctx, memory.setup) });

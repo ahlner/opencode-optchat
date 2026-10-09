@@ -43,6 +43,19 @@ This keeps compaction jobs with the provider configured for that scope.
 
 ## Trees and publications
 
+The enabled adapter checks pending preparation once per second through its existing serialized queue.
+It skips failed jobs and unexpired worker claims.
+A primary request interrupts the background attempt and retains its own admission deadline.
+Cancelled results remain subject to the existing lease fence checks.
+
+The worker measures durable progress through original, summary, and completed-job counts.
+Three consecutive attempts without progress persist a background pause.
+Workers update the stall counter in one SQLite transaction.
+The counter and pause survive runtime replacement.
+
+Confirmed retry clears the pause without changing retained data.
+Durable progress permits further bounded attempts. There is no total cost bound for an entire archive.
+
 Each session leaf covers one sealed original record.
 A parent covers two aligned adjacent children of equal size.
 Each summary contains at most 512 UTF-8 bytes.

@@ -8,8 +8,9 @@ export interface StatusIndicator {
 export function statusIndicator(status: MemoryStatus): StatusIndicator {
   if (!status.enabled) return { text: "OptChat: off", tone: "muted" };
   if (status.jobs.failed || status.jobs.expired) return { text: "OptChat: error", tone: "error" };
-  const jobs = status.jobs.pending + status.jobs.running;
-  if (jobs) return { text: `OptChat: processing ${jobs}`, tone: "warning" };
+  if (status.jobs.running) return { text: `OptChat: processing ${status.jobs.running}`, tone: "warning" };
+  if (status.jobs.pending && status.lastError === "BACKGROUND_PAUSED") return { text: "OptChat: paused", tone: "warning" };
+  if (status.jobs.pending) return { text: `OptChat: queued ${status.jobs.pending}`, tone: "warning" };
   if (status.activeTurns) return { text: "OptChat: active", tone: "success" };
   return { text: "OptChat: ready", tone: "success" };
 }

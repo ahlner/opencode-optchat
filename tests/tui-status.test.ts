@@ -12,10 +12,17 @@ describe("terminal memory status", () => {
     expect(statusIndicator(status).text).toBe("OptChat: ready");
     status.lastError = "COMPACTION_FAILED";
     expect(statusIndicator(status).text).toBe("OptChat: ready");
+    status.lastError = "BACKGROUND_PAUSED";
+    expect(statusIndicator(status).text).toBe("OptChat: ready");
+    delete status.lastError;
     status.activeTurns = 1;
     expect(statusIndicator(status).text).toBe("OptChat: active");
     status.jobs.pending = 2; status.jobs.running = 1;
-    expect(statusIndicator(status).text).toBe("OptChat: processing 3");
+    expect(statusIndicator(status).text).toBe("OptChat: processing 1");
+    status.jobs.running = 0;
+    expect(statusIndicator(status).text).toBe("OptChat: queued 2");
+    status.lastError = "BACKGROUND_PAUSED";
+    expect(statusIndicator(status).text).toBe("OptChat: paused");
     status.jobs.expired = 1;
     expect(statusIndicator(status).tone).toBe("error");
     status.jobs.expired = 0; status.jobs.failed = 1;

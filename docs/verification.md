@@ -455,3 +455,48 @@ A separate repetition passed all 18 settings and recovery groups in `optchat-int
 These tests used loopback model fixtures. They made no billable provider calls.
 The owner's next trace must confirm recovery in the affected real session.
 The adapter cannot recreate previously deleted originals unless authorized host history or retained checkpoints still contain them.
+
+## Automatic continuation after a preparation deadline
+
+The owner's next trace showed durable progress followed by a pending job with no running worker.
+The status bar called that state `processing 1` because it added pending and running jobs.
+Later agent activity restarted preparation. This identified an event-dependent continuation gap, not proof of a mutex deadlock.
+
+The enabled adapter now checks pending preparation once per second through its serialized queue.
+It skips live worker claims and failed jobs.
+New primary requests interrupt the background attempt before starting their own bounded preparation.
+Three consecutive attempts without durable progress persist a background pause.
+Workers update the shared counter atomically, and the counter survives runtime replacement.
+
+Native events cannot bypass that pause. Confirmed retry clears it without deleting originals.
+
+The status bar now separates `queued N`, claimed `processing N`, and `paused`.
+Claimed processing does not establish provider responsiveness.
+Background requests can incur costs. Durable progress resets the stall limit, so this is not a total archive cost bound.
+
+Deterministic tests check timer continuation, live-worker exclusion, failed-job exclusion, consecutive stall limits, primary preemption, and shutdown cancellation.
+They also check pause reporting, confirmed pause removal, and retained original payloads.
+`bun run check` passed TypeScript checks and 86 tests with 11,857 assertions.
+The dependency audit passed for 428 installed package instances with no bundled third-party source.
+
+The packed-plugin run passed 23 lifecycle groups and 23 settings and recovery groups.
+Its private diagnostic directories were:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-TOEDVg
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-EcnSsg
+```
+
+The native test holds a model response until preparation reaches its deadline.
+It then permits responses without sending a new prompt, agent event, or retry request.
+The background timer completes the retained publication.
+A separate case kills a worker with an unexpired claim and completes its publication after restart without another prompt.
+
+Another case holds all responses until three automatic attempts pause.
+The pause survives a forced service exit and a native permission event, with no additional model requests.
+Confirmed retry resumes preparation and preserves originals.
+The native terminal test passed six checks with no model calls in `optchat-tui-rEFqgZ`.
+
+These tests used private OpenCode services and loopback models. They made no billable provider calls.
+No existing user session, configuration, service, credential, or memory database changed.
+The owner's next trace must confirm the correction in the affected session.

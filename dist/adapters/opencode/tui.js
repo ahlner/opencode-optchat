@@ -89,7 +89,7 @@ Last error: ${status.lastError ?? "none"}
 Diagnostics: ${draft.database}.diagnostics.ndjson
 Status does not certify summary accuracy.` });
       } else if (field === "retry") {
-        if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs without deleting originals. Subsequent processing can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
+        if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs and clears a background pause without deleting originals. Automatic preparation can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
           await rpc.retry({}, options);
           ctx.ui.toast.show({ message: "Failed jobs queued. Processing resumes on the next session reconciliation.", variant: "success" });
         }
@@ -138,9 +138,12 @@ function statusIndicator(status) {
     return { text: "OptChat: off", tone: "muted" };
   if (status.jobs.failed || status.jobs.expired)
     return { text: "OptChat: error", tone: "error" };
-  const jobs = status.jobs.pending + status.jobs.running;
-  if (jobs)
-    return { text: `OptChat: processing ${jobs}`, tone: "warning" };
+  if (status.jobs.running)
+    return { text: `OptChat: processing ${status.jobs.running}`, tone: "warning" };
+  if (status.jobs.pending && status.lastError === "BACKGROUND_PAUSED")
+    return { text: "OptChat: paused", tone: "warning" };
+  if (status.jobs.pending)
+    return { text: `OptChat: queued ${status.jobs.pending}`, tone: "warning" };
   if (status.activeTurns)
     return { text: "OptChat: active", tone: "success" };
   return { text: "OptChat: ready", tone: "success" };
@@ -243,4 +246,4 @@ export {
   tui_default as default
 };
 
-//# debugId=E9F2EB300158850064756E2164756E21
+//# debugId=806A894E6B19024164756E2164756E21

@@ -40,6 +40,7 @@ The tests do not establish support for other operating systems or providers.
 | Memory status and retry | Read-only health counts, native status dialog, confirmed retry, and active-turn rejection |
 | Lease recovery after suspension | Event-loop blocking, unchanged-fence recovery, stale-worker rejection, and retention revocation |
 | Slow preparation cancellation | Non-cooperative model fixture, released claims, available settings, and resumed native admission |
+| Automatic preparation continuation | Timer resumes a released job without another native prompt or event. Failed jobs require confirmed retry |
 | Large existing-session activation latency | Not established. Initial reconciliation still runs before primary admission |
 
 Support applies only to the checked V2 boundaries.

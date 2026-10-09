@@ -114,6 +114,10 @@ test("status reports queue health without originals and retry preserves retained
     expect(await f.handlers.status({})).toMatchObject({ enabled: false, originals: 1, jobs: { failed: 1 }, lastError: "COMPACTION_FAILED" });
     expect(JSON.stringify(await f.handlers.status({}))).not.toContain("PRIVATE_STATUS_PAYLOAD");
     expect(await f.handlers.retry({})).toMatchObject({ originals: 1, jobs: { pending: 1, failed: 0 } });
+    store.set("settings", "backgroundRecovery", { paused: true });
+    expect((await f.handlers.status({})).lastError).toBe("BACKGROUND_PAUSED");
+    expect(await f.handlers.retry({})).toMatchObject({ originals: 1, jobs: { pending: 1, failed: 0 } });
+    expect(store.get("settings", "backgroundRecovery")).toBeUndefined();
     await engine.drain(); expect(memoryStatus(f.database, false).publications).toBe(1);
     expect(engine.sources("session", 0)[0].payload).toBe("PRIVATE_STATUS_PAYLOAD"); store.close();
   } finally { await f.cleanup?.(); await rm(f.root, { recursive: true, force: true }); }

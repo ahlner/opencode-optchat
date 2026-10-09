@@ -72,6 +72,14 @@ Reject settings changes during active turns. Dispose old hooks and tools before 
 Disabling pauses ingestion. It does not delete stored memory or revoke existing publications.
 Run `bun run test:settings` and `bun run test:tui` after settings changes.
 
+Background preparation uses the existing serialized queue and claim fences.
+Skip failed jobs and live worker claims.
+Interrupt background work for primary admission.
+
+Persist the shared stall counter and pause after three attempts without durable progress.
+Native events must not bypass the pause. Confirmed retry can clear it without deleting originals.
+Treat `BACKGROUND_PAUSED` as an operational state, never as a reason to retire history.
+
 Run `bun run test:git` to check the public Git package in a fresh private host.
 Set `OPTCHAT_GIT_PACKAGE` to select a different Git revision.
 

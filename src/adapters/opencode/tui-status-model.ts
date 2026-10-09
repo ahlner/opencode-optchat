@@ -1,0 +1,54 @@
+import type { MemoryStatus } from "./settings-status.ts";
+
+export interface StatusIndicator {
+  text: string;
+  tone: "muted" | "success" | "warning" | "error";
+}
+
+export function statusIndicator(status: MemoryStatus): StatusIndicator {
+  if (!status.enabled) return { text: "OptChat: off", tone: "muted" };
+  if (status.jobs.failed || status.jobs.expired) return { text: "OptChat: error", tone: "error" };
+  const jobs = status.jobs.pending + status.jobs.running;
+  if (jobs) return { text: `OptChat: processing ${jobs}`, tone: "warning" };
+  if (status.activeTurns) return { text: "OptChat: active", tone: "success" };
+  return { text: "OptChat: ready", tone: "success" };
+}
+
+export function createStatusReader<Location>(options: {
+  location: () => Location | undefined;
+  read: (location: Location, signal: AbortSignal) => Promise<MemoryStatus>;
+  update: (indicator: StatusIndicator) => void;
+}) {
+  let disposed = false;
+  let pending = false;
+  let controller: AbortController | undefined;
+  return {
+    async refresh() {
+      if (disposed || pending) return;
+      const location = options.location();
+      if (!location) {
+        options.update({ text: "OptChat: unavailable", tone: "muted" });
+        return;
+      }
+      const key = JSON.stringify(location);
+      pending = true;
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 4000);
+      try {
+        const status = await options.read(location, controller.signal);
+        if (!disposed && key === JSON.stringify(options.location())) options.update(statusIndicator(status));
+      } catch {
+        if (!disposed && key === JSON.stringify(options.location())) {
+          options.update({ text: "OptChat: unavailable", tone: "muted" });
+        }
+      } finally {
+        clearTimeout(timeout);
+        pending = false;
+      }
+    },
+    dispose() {
+      disposed = true;
+      controller?.abort();
+    },
+  };
+}

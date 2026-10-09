@@ -127,10 +127,119 @@ Status does not certify summary accuracy.` });
   }] }));
 }
 
+// src/adapters/opencode/tui-status.ts
+import { createElement, spread } from "@opentui/solid";
+import { createSignal, onCleanup, onMount } from "solid-js";
+
+// src/adapters/opencode/tui-status-model.ts
+function statusIndicator(status) {
+  if (!status.enabled)
+    return { text: "OptChat: off", tone: "muted" };
+  if (status.jobs.failed || status.jobs.expired)
+    return { text: "OptChat: error", tone: "error" };
+  const jobs = status.jobs.pending + status.jobs.running;
+  if (jobs)
+    return { text: `OptChat: processing ${jobs}`, tone: "warning" };
+  if (status.activeTurns)
+    return { text: "OptChat: active", tone: "success" };
+  return { text: "OptChat: ready", tone: "success" };
+}
+function createStatusReader(options) {
+  let disposed = false;
+  let pending = false;
+  let controller;
+  return {
+    async refresh() {
+      if (disposed || pending)
+        return;
+      const location = options.location();
+      if (!location) {
+        options.update({ text: "OptChat: unavailable", tone: "muted" });
+        return;
+      }
+      const key = JSON.stringify(location);
+      pending = true;
+      controller = new AbortController;
+      const timeout = setTimeout(() => controller?.abort(), 4000);
+      try {
+        const status = await options.read(location, controller.signal);
+        if (!disposed && key === JSON.stringify(options.location()))
+          options.update(statusIndicator(status));
+      } catch {
+        if (!disposed && key === JSON.stringify(options.location())) {
+          options.update({ text: "OptChat: unavailable", tone: "muted" });
+        }
+      } finally {
+        clearTimeout(timeout);
+        pending = false;
+      }
+    },
+    dispose() {
+      disposed = true;
+      controller?.abort();
+    }
+  };
+}
+
+// src/adapters/opencode/tui-status.ts
+function registerStatusBar(ctx) {
+  const rpc = ctx.client.rpc(SettingsRpc);
+  const cleanups = new Set;
+  const render = () => {
+    const [indicator, setIndicator] = createSignal({ text: "OptChat: checking", tone: "muted" });
+    const reader = createStatusReader({
+      location: () => ctx.location ?? ctx.data.location.default(),
+      read: async (location, signal) => await rpc.status({}, { location, signal }),
+      update: setIndicator
+    });
+    let timer;
+    const cleanup = () => {
+      clearInterval(timer);
+      reader.dispose();
+      cleanups.delete(cleanup);
+    };
+    cleanups.add(cleanup);
+    onMount(() => {
+      reader.refresh();
+      timer = setInterval(() => void reader.refresh(), 5000);
+    });
+    onCleanup(cleanup);
+    const text = createElement("text");
+    spread(text, {
+      get fg() {
+        const theme = ctx.theme;
+        const tone = indicator().tone;
+        return tone === "muted" ? theme.text.muted : theme.text.feedback[tone].base;
+      },
+      get children() {
+        return ` ${indicator().text} `;
+      }
+    });
+    return text;
+  };
+  const removeHome = ctx.ui.slot({ append: "home.footer.status", render });
+  let removePrompt;
+  try {
+    removePrompt = ctx.ui.slot({ append: "prompt.footer.status", render });
+  } catch (error) {
+    removeHome();
+    throw error;
+  }
+  return () => {
+    for (const cleanup of cleanups)
+      cleanup();
+    removePrompt();
+    removeHome();
+  };
+}
+
 // src/adapters/opencode/tui.ts
-var tui_default = Plugin.define({ id: "optchat.settings", setup: registerSettingsDialog });
+var tui_default = Plugin.define({ id: "optchat.settings", setup(ctx) {
+  registerSettingsDialog(ctx);
+  return registerStatusBar(ctx);
+} });
 export {
   tui_default as default
 };
 
-//# debugId=A3E5846502DB7CEA64756E2164756E21
+//# debugId=1C380061F5EA014F64756E2164756E21

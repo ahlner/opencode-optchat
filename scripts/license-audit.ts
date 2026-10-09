@@ -9,7 +9,7 @@ interface Entry {
 }
 const entries: Entry[] = [];
 const sha256 = (data: string) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
-const allowed = new Set(["MIT", "ISC", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "0BSD", "CC0-1.0", "CC-BY-3.0", "BlueOak-1.0.0", "(AFL-2.1 OR BSD-3-Clause)"]);
+const allowed = new Set(["MIT", "ISC", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "0BSD", "CC0-1.0", "CC-BY-3.0", "CC-BY-4.0", "BlueOak-1.0.0", "(AFL-2.1 OR BSD-3-Clause)"]);
 async function scan(directory: string): Promise<void> {
   for (const item of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     if (item.name.startsWith(".")) continue;

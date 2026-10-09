@@ -45,6 +45,7 @@ async function waitFor(text: string, timeout = 30000) {
 }
 try {
   await Bun.sleep(process.env.OPTCHAT_GIT_PACKAGE ? 15000 : 7000);
+  await waitFor("OptChat: off");
   write("\x10"); await Bun.sleep(800);
   write("OptChat settings"); await Bun.sleep(800);
   write("\r");
@@ -53,7 +54,7 @@ try {
   write("\x1b[B".repeat(6)); await Bun.sleep(400); write("\r");
   await waitFor("Originals: 0");
   assert(Bun.stripANSI(terminal).includes("Database: not created"));
-  console.log(JSON.stringify({ root, checks: ["automatic TUI package export", "palette command", "native settings dialog", "inactive installation", "native memory status"], modelCalls: 0 }, null, 2));
+  console.log(JSON.stringify({ root, checks: ["automatic TUI package export", "home status bar", "palette command", "native settings dialog", "inactive installation", "native memory status"], modelCalls: 0 }, null, 2));
 } finally {
   write("\x1b\x03"); await Bun.sleep(400); write("\x03");
   const timeout = setTimeout(() => task.kill("SIGTERM"), 5000);

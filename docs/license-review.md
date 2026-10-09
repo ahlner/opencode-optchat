@@ -6,7 +6,7 @@ Copyright (c) 2026 Philipp Ahlner.
 
 ## Scope and result
 
-The review covered project sources, code, documentation, installed package metadata, available license files, and both distributed JavaScript bundles.
+The review covered project sources, code, documentation, installed package metadata, available license files, and the distributed JavaScript bundles.
 The review found no conflict with MIT licensing of original project code in the current distribution.
 This finding is not a legal certification or a guarantee of all third-party rights.
 
@@ -57,24 +57,25 @@ The implementation work used the reference sources.
 
 ## Dependencies
 
-`docs/dependency-licenses.json` records 288 installed package instances, including repeated installations and versions.
+`docs/dependency-licenses.json` records 428 installed package instances, including repeated installations and versions.
 This count does not represent distinct package names or all platform-specific lockfile artifacts.
 The review did not inspect uninstalled platform packages.
 
 | Declaration | Installed instances |
 | --- | ---: |
-| MIT | 127 |
-| ISC | 67 |
-| Apache-2.0 | 71 |
-| BlueOak-1.0.0 | 16 |
-| BSD-2-Clause | 2 |
-| BSD-3-Clause | 1 |
+| MIT | 213 |
+| ISC | 86 |
+| Apache-2.0 | 72 |
+| BlueOak-1.0.0 | 46 |
+| BSD-2-Clause | 4 |
+| BSD-3-Clause | 2 |
 | AFL-2.1 OR BSD-3-Clause | 1 |
 | CC-BY-3.0 | 1 |
+| CC-BY-4.0 | 1 |
 | CC0-1.0 | 1 |
 | 0BSD | 1 |
 
-The direct dependencies declare MIT for `@opencode/plugin` and `@types/bun`, and Apache-2.0 for `typescript`.
+The direct dependencies declare MIT, except `typescript`, which declares Apache-2.0.
 Each inspected package instance declares a license.
 The inventory records SHA-256 hashes of available license and NOTICE files, not their complete text.
 
@@ -85,6 +86,10 @@ Specific findings:
 - `spdx-exceptions` 2.5.0 declares CC-BY-3.0.
   Its data is not MIT code.
   Separate distribution must satisfy CC-BY obligations.
+- `caniuse-lite` 1.0.30001815 declares CC-BY-4.0 and includes its license text.
+  The terminal renderer introduces this development dependency through its compiler dependencies.
+  The distributed bundles exclude its data and code.
+  Separate redistribution requires attribution, license information, and an indication of changes.
 - `json-schema` 0.4.0 offers AFL-2.1 OR BSD-3-Clause.
   A distributor can choose the BSD-3-Clause option.
 - Apache-2.0 and other permissive licenses remain separate.
@@ -93,8 +98,8 @@ Specific findings:
 
 ## Distributed package
 
-The Bun build keeps `@opencode/plugin` external.
-Both bundle source maps name only files under the project's `src` directory.
+The Bun build keeps `@opencode/plugin`, `@opentui/solid`, and `solid-js` external.
+All bundle source maps name only files under the project's `src` directory.
 The package excludes dependencies and Bun/OpenCode binaries.
 It includes the unchanged owner-supplied paper, but not the referenced Gist or OpenCode documentation.
 The package test checks MIT metadata, the copyright notice, and third-party notices.

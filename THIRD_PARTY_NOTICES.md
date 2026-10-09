@@ -25,10 +25,16 @@ This license does not replace licenses for dependencies, external documents, run
 | Direct dependency | Version | Declared license | Distribution |
 | --- | --- | --- | --- |
 | `@opencode/plugin` | 2.0.26 | MIT | External runtime dependency |
+| `@opencode/theme` | 2.0.26 | MIT | Development only |
+| `@opentui/core` | 0.5.17 | MIT | Development only |
+| `@opentui/solid` | 0.5.17 | MIT | Development dependency and external host-provided peer |
+| `solid-js` | 1.9.15 | MIT | Development dependency and external host-provided peer |
 | `@types/bun` | 1.4.2 | MIT | Development only |
 | `typescript` | 7.0.2 | Apache-2.0 | Development only |
 
-The build leaves `@opencode/plugin` external. The archive contains project code,
+The build leaves `@opencode/plugin`, `@opentui/solid`, and `solid-js` external.
+OpenCode supplies the terminal rendering peers.
+The archive contains project code,
 declarations, source maps, and project documentation. It contains no `node_modules`,
 SDK implementation, compiler, or Bun/OpenCode executable.
 
@@ -40,6 +46,10 @@ Retain upstream license information if you distribute those packages separately.
 
 Transitive packages retain their own licenses. In particular:
 
+- `caniuse-lite` 1.0.30001815 declares CC-BY-4.0. Its package names Ben Briggs as author.
+  See its [upstream repository](https://github.com/browserslist/caniuse-lite) and [license terms](https://creativecommons.org/licenses/by/4.0/).
+  This development dependency supplies browser compatibility data. This package does not bundle its data or code.
+  Separate redistribution requires attribution, the applicable license information, and an indication of changes.
 - `spdx-exceptions` 2.5.0 declares CC-BY-3.0. Its package names The Linux Foundation
   as author and Kyle E. Mitchell as contributor. See its
   [upstream repository](https://github.com/kemitchell/spdx-exceptions.json) and

@@ -42,6 +42,21 @@ Database and scope identifiers remain fixed in this dialog to prevent accidental
 
 ### Memory status and recovery
 
+The terminal status bar shows OptChat on the home screen and in sessions.
+It reads the current Location's server status every five seconds while visible.
+The indicator does not start compaction or make model calls.
+
+- `off`: Memory ingestion is disabled.
+- `ready`: OptChat is enabled with no active turns or pending jobs.
+- `active`: At least one memory turn is active.
+- `processing N`: The compactor has N pending or running jobs.
+- `error`: At least one compactor job failed or has an expired lease.
+- `unavailable`: The status request failed or no Location is available.
+
+The indicator gives failed or expired jobs priority over active processing.
+It ignores historical error codes when no failed or expired jobs remain.
+It does not certify summary accuracy or session authorization.
+
 Open **OptChat settings** and select **Show memory status**.
 The status shows retained originals, summaries, publications, active turns, and compactor jobs.
 Expired running jobs and failed jobs appear separately.

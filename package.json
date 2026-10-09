@@ -1,0 +1,46 @@
+{
+  "name": "opencode-optchat",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "Philipp Ahlner",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ahlner/opencode-optchat.git"
+  },
+  "homepage": "https://github.com/ahlner/opencode-optchat#readme",
+  "bugs": { "url": "https://github.com/ahlner/opencode-optchat/issues" },
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/types/index.d.ts", "default": "./dist/index.js" },
+    "./plugin": { "types": "./dist/types/adapters/opencode/plugin.d.ts", "default": "./dist/adapters/opencode/plugin.js" }
+  },
+  "files": ["dist", "README.md", "docs", "AGENTS.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run test:docs && bun run typecheck && bun test",
+    "build": "bun build src/index.ts src/adapters/opencode/plugin.ts --target bun --outdir dist --root src --external @opencode/plugin --sourcemap=external && tsc -p tsconfig.build.json",
+    "pack": "bun run build && bun pm pack",
+    "demo": "bun run examples/two-session-demo.ts",
+    "spike": "bun run scripts/spike.ts",
+    "test:integration": "bun run build && bun run scripts/integration.ts",
+    "test:package": "bun run build && bun run scripts/package-test.ts",
+    "test:coverage": "bun test --coverage",
+    "test:docs": "bun run scripts/docs-check.ts",
+    "audit:licenses": "bun run scripts/license-audit.ts",
+    "test:real": "bun run build && bun run scripts/real-host-test.ts",
+    "admin": "bun run scripts/admin.ts",
+    "evaluate": "bun run scripts/evaluate.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.26"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
+  }
+}

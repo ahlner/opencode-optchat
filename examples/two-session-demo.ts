@@ -1,0 +1,12 @@
+import { Engine, Store, Retrieval, assembleContext, sourceKey } from "../src/index.ts";
+const store = new Store(), engine = new Engine(store);
+engine.register("A", "user:stable-project", "project");
+engine.register("B", "user:stable-project", "project");
+engine.admit("A", "decision");
+const record = engine.append({ sessionId: "A", generation: 0, turnId: "decision", eventKey: "event-1", kind: "user", timestamp: new Date().toISOString(), projectId: "project", payload: "Decision: use Bun, not npm or node." });
+engine.finish("A", "decision", "completed"); await engine.drain();
+const turn = engine.admit("B", "next");
+const context = assembleContext(engine, { system: ["Current host instructions"], tools: {}, live: [{ role: "user", text: "Continue this project." }], snapshot: turn.snapshot, budget: { contextTokens: 32000, outputTokens: 2000, safetyTokens: 1000, memoryBytes: 16000 } });
+console.log(context.memory);
+console.log(new Retrieval(engine).source(turn.snapshot, sourceKey(record)));
+store.close();

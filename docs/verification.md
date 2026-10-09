@@ -193,7 +193,17 @@ They cover activation, context injection, retrieval, crash recovery, persistent 
 
 A private macOS pseudo-terminal opened the native palette and settings dialog without submitting a model prompt.
 Its fixture uses the same conditional TUI export shape as the package.
-The local fixture is not evidence of a public Git TUI installation.
+The public Git revision `ca6473f` also opened the native settings dialog from a fresh private cache.
+That test used the Git package directly, without the local wrapper.
+It submitted no model prompts.
+
+Both the public branch and revision passed all 23 lifecycle groups in fresh private hosts.
+One earlier branch attempt reached the installation timeout before plugin setup.
+Its Git cache directory remained empty. The repeated branch installation passed without a source change.
+
+Unit coverage reports 84.98% lines and 86.60% functions across loaded source and compiled modules.
+The settings controller reports 93.33% line coverage. The dialog controller reports 100% line coverage.
+Private host and terminal tests run outside that unit coverage process.
 
 Local directory resolution differs from Git resolution in the pinned host.
 An initial directory-only fixture did not load the plugin.
@@ -202,9 +212,12 @@ The local terminal fixture therefore uses an explicit wrapper package.
 Packed lifecycle, managed settings, and terminal diagnostics:
 
 ```text
-/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-XVDiJ9
-/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-s6VB6C
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-rYGG9f
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-CgS9pD
 /var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-3q90Sh
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-h24WvI
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-vR4q6J
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-WJyLQ6
 ```
 
 ## Limits of the evidence

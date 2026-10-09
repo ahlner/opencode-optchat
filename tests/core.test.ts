@@ -264,6 +264,28 @@ describe("crash, concurrency, retention and compactor failures", () => {
     expect(fresh.id).toBe(old.id); expect(fresh.fence).toBeGreaterThan(old.fence);
     expect(e.store.owns(old)).toBe(false); expect(e.store.owns(fresh)).toBe(true);
     expect(e.store.renew(old, 10000)).toBe(false); expect(e.store.renew(fresh, 10000)).toBe(true);
+    expect(e.store.recoverLease(old, 10000)).toBe(false);
+  });
+  test("a suspended worker recovers unchanged fences before chunk and final commits", async () => {
+    const fake = new FakeSummarizer();
+    const e = make({ summarize: async text => { Bun.sleepSync(70); return fake.summarize(text); } }, { leaseMs: 30, chunkBytes: 2048 });
+    register(e, "a"); e.admit("a", "t"); e.append(input("a", "t", "evt", "SUSPENDED_WORKER ".repeat(350)));
+    expect(await e.workOne()).toBe(true);
+    expect(e.findNode(sessionTree("a", 0), 0, 1)).toBeDefined();
+    expect(e.store.db.query("SELECT count(*) AS count FROM jobs WHERE status='failed'").get()).toEqual({ count: 0 });
+  });
+  test("a superseded worker discards its result without failing the replacement job", async () => {
+    let resolve!: (value: Summary) => void;
+    const e = make({ summarize: () => new Promise(r => { resolve = r; }) });
+    register(e, "a"); e.admit("a", "t"); e.append(input("a", "t", "evt", "ORIGINAL")); e.finish("a", "t", "completed");
+    const pending = e.workOne();
+    e.store.db.query("UPDATE jobs SET leaseUntil=0 WHERE status='running'").run();
+    const replacement = new Engine(e.store, new FakeSummarizer()); await replacement.drain();
+    resolve({ text: "STALE_RESULT", model: "stale", promptVersion: "1", fallback: false });
+    expect(await pending).toBe(true);
+    expect(pubs(e)).toHaveLength(1);
+    expect(JSON.stringify(e.store.db.query("SELECT value FROM nodes").all())).not.toContain("STALE_RESULT");
+    expect(e.store.db.query("SELECT count(*) AS count FROM jobs WHERE status='failed'").get()).toEqual({ count: 0 });
   });
   test("lease renewal protects a model call longer than its original lease", async () => {
     const fake = new FakeSummarizer();
@@ -335,7 +357,7 @@ describe("crash, concurrency, retention and compactor failures", () => {
     const e = make({ summarize: () => new Promise(r => { resolve = r; }) });
     register(e, "a"); e.admit("a", "t"); e.append(input("a", "t", "e", "secret")); e.finish("a", "t", "completed");
     const pending = e.workOne(); e.retire("a", "delete"); resolve({ text: "secret", model: "late", promptVersion: "1", fallback: false });
-    await expect(pending).rejects.toThrow("LEASE_LOST"); expect(pubs(e)).toHaveLength(0);
+    expect(await pending).toBe(true); expect(pubs(e)).toHaveLength(0);
   });
 });
 describe("bounded real summarizer and host transcript mapping", () => {

@@ -12,6 +12,7 @@ export declare class Store {
     claim(now?: number, leaseMs?: number): Job | undefined;
     owns(job: Job): boolean;
     renew(job: Job, leaseMs: number, now?: number): boolean;
+    recoverLease(job: Job, leaseMs: number, now?: number): boolean;
     fail(job: Job, error: unknown): void;
     close(): void;
 }

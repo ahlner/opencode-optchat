@@ -50,7 +50,10 @@ try {
   write("\r");
   await waitFor("Memory: disabled");
   assert(Bun.stripANSI(terminal).includes("Compactor:"));
-  console.log(JSON.stringify({ root, checks: ["automatic TUI package export", "palette command", "native settings dialog", "inactive installation"], modelCalls: 0 }, null, 2));
+  write("\x1b[B".repeat(6)); await Bun.sleep(400); write("\r");
+  await waitFor("Originals: 0");
+  assert(Bun.stripANSI(terminal).includes("Database: not created"));
+  console.log(JSON.stringify({ root, checks: ["automatic TUI package export", "palette command", "native settings dialog", "inactive installation", "native memory status"], modelCalls: 0 }, null, 2));
 } finally {
   write("\x1b\x03"); await Bun.sleep(400); write("\x03");
   const timeout = setTimeout(() => task.kill("SIGTERM"), 5000);

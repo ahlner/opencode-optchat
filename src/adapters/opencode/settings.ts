@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, isAbsolute } from "node:path";
 import { Store, insist, hash, type Turn } from "../../index.ts";
 import { SettingsRpc, type Settings } from "./settings-rpc.ts";
+import { memoryStatus, retryMemoryJobs } from "./settings-status.ts";
 
 export async function setupSettings(ctx: Context, start: (ctx: Context) => Promise<Cleanup | void> | Cleanup | void) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
@@ -74,6 +75,12 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
   let rpc;
   try { rpc = await ctx.rpc.register(SettingsRpc, {
     read: async () => publicSettings(),
+    status: async () => memoryStatus(settings.database, settings.enabled),
+    retry: async () => serial(async () => {
+      insist(!closing && !changing && !activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
+      retryMemoryJobs(settings.database);
+      return memoryStatus(settings.database, settings.enabled);
+    }),
     write: async input => serial(async () => {
       insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
       insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");

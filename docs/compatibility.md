@@ -37,6 +37,8 @@ The tests do not establish support for other operating systems or providers.
 | Real summary quality | A real two-session host case passed. No repeated baseline benchmark |
 | Git package installation | Public GitHub package, fresh isolated cache, compiled root export, and full private host lifecycle |
 | TUI settings | Native terminal dialog, private settings RPC, activation, persistence, and controlled budget changes |
+| Memory status and retry | Read-only health counts, native status dialog, confirmed retry, and active-turn rejection |
+| Lease recovery after suspension | Event-loop blocking, unchanged-fence recovery, stale-worker rejection, and retention revocation |
 
 Support applies only to the checked V2 boundaries.
 The adapter rejects a foreign compaction marker without an original checkpoint.

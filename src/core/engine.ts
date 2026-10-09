@@ -1,6 +1,6 @@
 import { Store } from "../storage/store.ts";
 import { chunks, FakeSummarizer, type Summarizer } from "../compactor/summarizer.ts";
-import { bytes, hash, insist, key, sessionTree, sharedTree, sourceKey, turnKey, type Job, type Node, type Outcome, type Publication, type Session, type Snapshot, type SourceInput, type SourceRecord, type Turn, type View } from "./types.ts";
+import { MemoryError, bytes, hash, insist, key, sessionTree, sharedTree, sourceKey, turnKey, type Job, type Node, type Outcome, type Publication, type Session, type Snapshot, type SourceInput, type SourceRecord, type Turn, type View } from "./types.ts";
 import { rangeCover, validateCover } from "./tree.ts";
 import { mergeView, project } from "./views.ts";
 
@@ -149,7 +149,7 @@ export class Engine {
         if (existing) { summaries.push(existing.text); ids.push(existing.id); fallback ||= existing.fallback; continue; }
         const result = await this.summarizer.summarize(parts[i]); fallback ||= result.fallback;
         const n: Node = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
-        this.store.transaction(() => { insist(this.store.owns(job), "LEASE_LOST", "Compactor lease expired"); this.writeNode(n); });
+        this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
         summaries.push(n.text); ids.push(n.id);
       }
       text = summaries.join("\n"); inputs = ids; depth++;
@@ -160,10 +160,9 @@ export class Engine {
   async workOne(): Promise<boolean> {
     const job = this.store.claim(Date.now(), this.options.leaseMs);
     if (!job) return false;
-    let renewalFailed = false;
     const renewal = setInterval(() => {
-      try { if (!this.store.renew(job, this.options.leaseMs)) renewalFailed = true; }
-      catch { renewalFailed = true; }
+      try { this.store.renew(job, this.options.leaseMs); }
+      catch { /* The commit transaction checks the current fence again. */ }
     }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
     renewal.unref();
     try {
@@ -183,7 +182,7 @@ export class Engine {
       }
       const result = await this.summarizeFull(text, job);
       this.store.transaction(() => {
-        insist(!renewalFailed && this.store.owns(job), "LEASE_LOST", "Worker was superseded or its lease expired");
+        insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n: Node = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get<Turn>("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -203,7 +202,10 @@ export class Engine {
         }
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
-    } catch (error) { this.store.fail(job, error); throw error; }
+    } catch (error) {
+      // Losing ownership is coordination, not a failed model call. Never fail the replacement job.
+      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) { this.store.fail(job, error); throw error; }
+    }
     finally { clearInterval(renewal); }
     return true;
   }

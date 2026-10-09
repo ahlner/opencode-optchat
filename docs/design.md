@@ -14,6 +14,12 @@ A changed payload under the same key causes `EVENT_CONFLICT`.
 `nodes` stores immutable summaries and their coordinates.
 `entities` stores sessions, turns, publications, snapshots, and views as JSON.
 `jobs` stores the durable work queue.
+
+Workers renew leases while a model call runs.
+Before each commit, a worker atomically refreshes its lease if its fence and running status still match.
+This permits recovery after suspension without permitting a superseded worker to commit.
+Lost ownership discards the result instead of marking another worker's job failed.
+
 SQLite FTS5 indexes originals and summaries.
 Database triggers update summary indexes within the transaction.
 
@@ -37,8 +43,11 @@ The worker divides complete large inputs into bounded chunks without splitting U
 It stores intermediate summaries durably.
 It reduces those summaries until the final input fits the limit.
 The complete originals remain available independently.
+
 The worker renews its lease regularly.
-It must not renew an expired or revoked lease.
+Regular renewal requires an unexpired lease.
+Commit recovery can refresh an expired lease only through the unchanged fence and running status.
+Neither operation can recover a revoked or superseded job.
 
 A terminal turn covers the half-open record interval `[start,end)`.
 `rangeCover` produces exact dyadic coverage of that interval.

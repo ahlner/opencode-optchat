@@ -4,6 +4,7 @@ import { Store, Engine } from "../src/index.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { registerSettingsDialog } from "../src/adapters/opencode/tui-dialog.ts";
+import { memoryStatus } from "../src/adapters/opencode/settings-status.ts";
 
 async function fixture() {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-settings-"));
@@ -96,4 +97,35 @@ test("closing the TUI dialog does not persist draft changes or make model calls"
     ui: { dialog: { select: async () => choices.shift(), alert: async () => {} } },
   } as any);
   await command.run(); expect(writes).toBe(0); expect(calls).toBe(0);
+});
+
+test("status reports queue health without originals and retry preserves retained memory", async () => {
+  const f = await fixture();
+  try {
+    expect(memoryStatus(f.database, false)).toMatchObject({ databaseExists: false, originals: 0 });
+    expect(await Bun.file(f.database).exists()).toBe(false);
+    const store = new Store(f.database), engine = new Engine(store);
+    engine.register("session", "test-scope", "test-project"); engine.admit("session", "turn");
+    engine.append({ sessionId: "session", generation: 0, eventKey: "evt", turnId: "turn", kind: "user", timestamp: new Date().toISOString(), projectId: "test-project", payload: "PRIVATE_STATUS_PAYLOAD" });
+    await expect(f.handlers.retry({})).rejects.toThrow("SETTINGS_BUSY");
+    engine.finish("session", "turn", "completed");
+    store.db.query("UPDATE jobs SET status='failed',error='MemoryError: LEASE_LOST: Compactor lease expired'").run();
+    store.set("adapterErrors", "session", { code: "COMPACTION_FAILED", timestamp: new Date().toISOString() });
+    expect(await f.handlers.status({})).toMatchObject({ enabled: false, originals: 1, jobs: { failed: 1 }, lastError: "COMPACTION_FAILED" });
+    expect(JSON.stringify(await f.handlers.status({}))).not.toContain("PRIVATE_STATUS_PAYLOAD");
+    expect(await f.handlers.retry({})).toMatchObject({ originals: 1, jobs: { pending: 1, failed: 0 } });
+    await engine.drain(); expect(memoryStatus(f.database, false).publications).toBe(1);
+    expect(engine.sources("session", 0)[0].payload).toBe("PRIVATE_STATUS_PAYLOAD"); store.close();
+  } finally { await f.cleanup?.(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("the terminal status dialog reads health and confirms retries without saving settings", async () => {
+  let command: any, retried = 0, alerts: any[] = [], confirmations = 0;
+  const choices = ["status", "retry", undefined];
+  registerSettingsDialog({ location: { directory: "/test" }, keymap: { layer: (factory: any) => { command = factory().commands[0]; } },
+    client: { rpc: () => ({ read: async () => ({ enabled: false }), status: async () => ({ enabled: false, databaseExists: true, sessions: 2, originals: 9, summaries: 6, publications: 3, activeTurns: 0, jobs: { failed: 1 }, lastError: "COMPACTION_FAILED" }), retry: async () => { retried++; } }) },
+    ui: { dialog: { select: async () => choices.shift(), alert: async (value: any) => { alerts.push(value); }, confirm: async () => { confirmations++; return true; } }, toast: { show: () => {} } },
+  } as any);
+  await command.run(); expect(alerts[0].message).toContain("Originals: 9"); expect(alerts[0].message).toContain("COMPACTION_FAILED");
+  expect(retried).toBe(1); expect(confirmations).toBe(1);
 });

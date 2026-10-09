@@ -105,7 +105,8 @@ try {
      const settings = await settingsCall("read");
      assert.equal(settings.enabled, false); assert.equal(await Bun.file(settings.database).exists(), false);
      assert(settings.database.startsWith(join(root, "data")), "Automatic database stays in the private server data directory");
-     dbPath = settings.database;
+      dbPath = settings.database;
+      assert.equal((await settingsCall("status")).databaseExists, false, "Status does not create an inactive database");
      await settingsCall("write", { ...settings, enabled: true, compactorModel: { providerID: "fixture", id: "fixture" } });
    }
    if (gitPackage) {
@@ -145,13 +146,17 @@ try {
   assert(publications().filter(p => p.sessionId === a.id).length === 1, "Restart never republishes A");
   if (managedSettings) {
     await until(() => publications().some(p => p.sessionId === c.id), "C publication before settings change");
-    const settings = await settingsCall("read"), count = publications().length;
+     const settings = await settingsCall("read"), count = publications().length;
+     const health = await settingsCall("status");
+     assert(health.originals > 0 && health.summaries > 0 && health.sessions >= 3);
+     assert.equal(health.publications, count); assert.equal(health.jobs.failed, 0);
+     assert.equal((await settingsCall("retry")).publications, count, "Retry does not delete memory or create duplicate publications");
     await settingsCall("write", { ...settings, enabled: false });
     assert.equal((await settingsCall("read")).enabled, false);
     assert.equal(publications().length, count, "Disabling does not delete retained originals or publications");
     await settingsCall("write", { ...settings, memoryBytes: 12000 });
     assert.equal((await settingsCall("read")).memoryBytes, 12000);
-    console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change"], modelRequests: requests.length }, null, 2));
+     console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });

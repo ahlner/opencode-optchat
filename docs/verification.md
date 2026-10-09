@@ -220,6 +220,36 @@ Packed lifecycle, managed settings, and terminal diagnostics:
 /var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-WJyLQ6
 ```
 
+## Lease suspension regression and memory status
+
+A reported `COMPACTION_FAILED` error contained `LEASE_LOST: Compactor lease expired`.
+The previous intermediate commit checked lease expiry without recovering an unchanged fence.
+The previous final commit also retained a renewal failure even after later successful renewal.
+These checks could reject work after suspension or timer delays.
+The report alone does not establish which delay or competing worker occurred on the user's host.
+
+The correction refreshes an unchanged running fence atomically before intermediate and final commits.
+A superseded or revoked worker discards its result without failing the replacement job.
+Tests block the event loop beyond the lease, replace a worker, and delete originals during a model call.
+The tests check that no stale result becomes visible.
+
+The terminal status reports counts and queue health without original payloads.
+Confirmed retry requeues failed jobs without deleting memory or creating duplicate publications.
+It rejects active turns. Later processing can incur model costs.
+
+The updated code passed 58 tests with 11,645 assertions and TypeScript checks.
+The packed plugin passed 23 lifecycle and 12 settings integration groups.
+The native terminal opened the status dialog without a model prompt.
+These tests did not activate or inspect the user's removed plugin.
+
+Diagnostics:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-1WLJXO
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-YjG7Rc
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-IzO9Aw
+```
+
 ## Limits of the evidence
 
 The private package and lifecycle integration still uses a controlled local model.

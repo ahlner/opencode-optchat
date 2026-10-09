@@ -327,7 +327,7 @@ class Engine {
         fallback ||= result.fallback;
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
-          insist(this.store.owns(job), "LEASE_LOST", "Compactor lease expired");
+          insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
           this.writeNode(n);
         });
         summaries.push(n.text);
@@ -345,14 +345,10 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs);
     if (!job)
       return false;
-    let renewalFailed = false;
     const renewal = setInterval(() => {
       try {
-        if (!this.store.renew(job, this.options.leaseMs))
-          renewalFailed = true;
-      } catch {
-        renewalFailed = true;
-      }
+        this.store.renew(job, this.options.leaseMs);
+      } catch {}
     }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
     renewal.unref();
     try {
@@ -383,7 +379,7 @@ class Engine {
       }
       const result = await this.summarizeFull(text, job);
       this.store.transaction(() => {
-        insist(!renewalFailed && this.store.owns(job), "LEASE_LOST", "Worker was superseded or its lease expired");
+        insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -409,8 +405,10 @@ class Engine {
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
     } catch (error) {
-      this.store.fail(job, error);
-      throw error;
+      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
+        this.store.fail(job, error);
+        throw error;
+      }
     } finally {
       clearInterval(renewal);
     }
@@ -621,6 +619,9 @@ class Store {
   }
   renew(job, leaseMs, now = Date.now()) {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
+  }
+  recoverLease(job, leaseMs, now = Date.now()) {
+    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running'").run(now + leaseMs, job.id, job.fence).changes === 1;
   }
   fail(job, error) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
@@ -845,10 +846,82 @@ var schema = {
   },
   required: ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"]
 };
+var counts = { type: "integer", minimum: 0 };
+var statusSchema = { type: "object", additionalProperties: false, properties: {
+  enabled: { type: "boolean" },
+  databaseExists: { type: "boolean" },
+  sessions: counts,
+  originals: counts,
+  summaries: counts,
+  publications: counts,
+  activeTurns: counts,
+  lastError: { type: "string" },
+  jobs: {
+    type: "object",
+    additionalProperties: false,
+    properties: { pending: counts, running: counts, expired: counts, failed: counts, done: counts, revoked: counts },
+    required: ["pending", "running", "expired", "failed", "done", "revoked"]
+  }
+}, required: ["enabled", "databaseExists", "sessions", "originals", "summaries", "publications", "activeTurns", "jobs"] };
 var SettingsRpc = Rpc.define({ id: "optchat.settings", methods: {
   read: { input: { type: "object", additionalProperties: false }, output: schema },
-  write: { input: schema, output: schema }
+  write: { input: schema, output: schema },
+  status: { input: { type: "object", additionalProperties: false }, output: statusSchema },
+  retry: { input: { type: "object", additionalProperties: false }, output: statusSchema }
 }, events: {} });
+
+// src/adapters/opencode/settings-status.ts
+import { Database as Database2 } from "bun:sqlite";
+import { existsSync } from "fs";
+function memoryStatus(database, enabled) {
+  const status = {
+    enabled,
+    databaseExists: existsSync(database),
+    sessions: 0,
+    originals: 0,
+    summaries: 0,
+    publications: 0,
+    activeTurns: 0,
+    jobs: { pending: 0, running: 0, expired: 0, failed: 0, done: 0, revoked: 0 }
+  };
+  if (!status.databaseExists)
+    return status;
+  const db = new Database2(database, { readonly: true });
+  try {
+    return db.transaction(() => {
+      const count = (sql) => db.query(sql).get().count;
+      status.sessions = count("SELECT count(*) AS count FROM entities WHERE bucket='sessions'");
+      status.originals = count("SELECT count(*) AS count FROM sources");
+      status.summaries = count("SELECT count(*) AS count FROM nodes");
+      status.publications = count("SELECT count(*) AS count FROM entities WHERE bucket='publications'");
+      status.activeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='turns' AND json_extract(value,'$.outcome') IS NULL");
+      for (const row of db.query("SELECT status,count(*) AS count FROM jobs GROUP BY status").all())
+        if (row.status in status.jobs)
+          status.jobs[row.status] = row.count;
+      status.jobs.expired = db.query("SELECT count(*) AS count FROM jobs WHERE status='running' AND leaseUntil<=?").get(Date.now()).count;
+      const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get();
+      if (error)
+        status.lastError = error.code === "COMPACTION_FAILED" ? "COMPACTION_FAILED" : "MEMORY_ERROR";
+      return status;
+    })();
+  } finally {
+    db.close();
+  }
+}
+function retryMemoryJobs(database) {
+  if (!existsSync(database))
+    return;
+  const store = new Store(database);
+  try {
+    store.transaction(() => {
+      insist(store.all("turns").every((t) => t.outcome), "SETTINGS_BUSY", "Finish or interrupt active turns before retrying compaction");
+      store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run();
+      store.db.query("DELETE FROM entities WHERE bucket='adapterErrors'").run();
+    });
+  } finally {
+    store.close();
+  }
+}
 
 // src/adapters/opencode/settings.ts
 async function setupSettings(ctx, start) {
@@ -947,6 +1020,12 @@ async function setupSettings(ctx, start) {
   try {
     rpc = await ctx.rpc.register(SettingsRpc, {
       read: async () => publicSettings(),
+      status: async () => memoryStatus(settings.database, settings.enabled),
+      retry: async () => serial(async () => {
+        insist(!closing && !changing && !activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
+        retryMemoryJobs(settings.database);
+        return memoryStatus(settings.database, settings.enabled);
+      }),
       write: async (input) => serial(async () => {
         insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
         insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");
@@ -1349,4 +1428,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=1708DF63D8DAC5E764756E2164756E21
+//# debugId=00AB0D435A0323B764756E2164756E21

@@ -322,7 +322,7 @@ class Engine {
         fallback ||= result.fallback;
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
-          insist(this.store.owns(job), "LEASE_LOST", "Compactor lease expired");
+          insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
           this.writeNode(n);
         });
         summaries.push(n.text);
@@ -340,14 +340,10 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs);
     if (!job)
       return false;
-    let renewalFailed = false;
     const renewal = setInterval(() => {
       try {
-        if (!this.store.renew(job, this.options.leaseMs))
-          renewalFailed = true;
-      } catch {
-        renewalFailed = true;
-      }
+        this.store.renew(job, this.options.leaseMs);
+      } catch {}
     }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
     renewal.unref();
     try {
@@ -378,7 +374,7 @@ class Engine {
       }
       const result = await this.summarizeFull(text, job);
       this.store.transaction(() => {
-        insist(!renewalFailed && this.store.owns(job), "LEASE_LOST", "Worker was superseded or its lease expired");
+        insist(this.store.recoverLease(job, this.options.leaseMs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -404,8 +400,10 @@ class Engine {
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
     } catch (error) {
-      this.store.fail(job, error);
-      throw error;
+      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
+        this.store.fail(job, error);
+        throw error;
+      }
     } finally {
       clearInterval(renewal);
     }
@@ -617,6 +615,9 @@ class Store {
   renew(job, leaseMs, now = Date.now()) {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
   }
+  recoverLease(job, leaseMs, now = Date.now()) {
+    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running'").run(now + leaseMs, job.id, job.fence).changes === 1;
+  }
   fail(job, error) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }
@@ -778,4 +779,4 @@ export {
   turnKey
 };
 
-//# debugId=267068EC2026B9A964756E2164756E21
+//# debugId=FC0358D1F311066E64756E2164756E21

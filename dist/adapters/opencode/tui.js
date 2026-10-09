@@ -18,9 +18,28 @@ var schema = {
   },
   required: ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"]
 };
+var counts = { type: "integer", minimum: 0 };
+var statusSchema = { type: "object", additionalProperties: false, properties: {
+  enabled: { type: "boolean" },
+  databaseExists: { type: "boolean" },
+  sessions: counts,
+  originals: counts,
+  summaries: counts,
+  publications: counts,
+  activeTurns: counts,
+  lastError: { type: "string" },
+  jobs: {
+    type: "object",
+    additionalProperties: false,
+    properties: { pending: counts, running: counts, expired: counts, failed: counts, done: counts, revoked: counts },
+    required: ["pending", "running", "expired", "failed", "done", "revoked"]
+  }
+}, required: ["enabled", "databaseExists", "sessions", "originals", "summaries", "publications", "activeTurns", "jobs"] };
 var SettingsRpc = Rpc.define({ id: "optchat.settings", methods: {
   read: { input: { type: "object", additionalProperties: false }, output: schema },
-  write: { input: schema, output: schema }
+  write: { input: schema, output: schema },
+  status: { input: { type: "object", additionalProperties: false }, output: statusSchema },
+  retry: { input: { type: "object", additionalProperties: false }, output: statusSchema }
 }, events: {} });
 
 // src/adapters/opencode/tui-dialog.ts
@@ -39,6 +58,8 @@ function registerSettingsDialog(ctx) {
         { title: `Safety reserve: ${draft.safetyTokens} tokens`, value: "safetyTokens" },
         { title: `Admission wait: ${draft.waitMs} milliseconds`, value: "waitMs" },
         { title: "Show project scope and database", value: "scope" },
+        { title: "Show memory status", value: "status" },
+        { title: "Retry failed compaction", value: "retry" },
         { title: "Save settings", value: "save" }
       ] });
       if (!field)
@@ -54,7 +75,24 @@ function registerSettingsDialog(ctx) {
         await ctx.ui.dialog.alert({ title: "Project memory", message: `Scope: ${draft.scopeId}
 Database: ${draft.database}
 This dialog cannot change the trust boundary.` });
-      else if (field === "save") {
+      else if (field === "status") {
+        const status = await rpc.status({}, options);
+        await ctx.ui.dialog.alert({ title: "Memory status", message: `Adapter: ${status.enabled ? "enabled" : "disabled"}
+Database: ${status.databaseExists ? "present" : "not created"}
+Sessions: ${status.sessions}
+Originals: ${status.originals}
+Summaries: ${status.summaries}
+Publications: ${status.publications}
+Active turns: ${status.activeTurns}
+Jobs: ${JSON.stringify(status.jobs)}
+Last error: ${status.lastError ?? "none"}
+Status does not certify summary accuracy.` });
+      } else if (field === "retry") {
+        if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs without deleting originals. Subsequent processing can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
+          await rpc.retry({}, options);
+          ctx.ui.toast.show({ message: "Failed jobs queued. Processing resumes on the next session reconciliation.", variant: "success" });
+        }
+      } else if (field === "save") {
         if (draft.enabled && !await ctx.ui.dialog.confirm({ title: "Enable project memory?", message: "OptChat retains public conversation data and sends it to the selected compactor. Model calls can incur costs.", label: { confirm: "Save", cancel: "Cancel" } }))
           continue;
         draft = await rpc.write(draft, options);
@@ -95,4 +133,4 @@ export {
   tui_default as default
 };
 
-//# debugId=FA13C84F30F064C864756E2164756E21
+//# debugId=A3E5846502DB7CEA64756E2164756E21

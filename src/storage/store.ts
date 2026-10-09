@@ -62,6 +62,10 @@ export class Store {
   renew(job: Job, leaseMs: number, now = Date.now()): boolean {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
   }
+  // Recover after suspension only if no other worker or retention change replaced this fence.
+  recoverLease(job: Job, leaseMs: number, now = Date.now()): boolean {
+    return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running'").run(now + leaseMs, job.id, job.fence).changes === 1;
+  }
   fail(job: Job, error: unknown) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }

@@ -40,6 +40,22 @@ Disabling pauses the adapter. It does not delete originals or revoke previously 
 Use the confirmed administrative retirement command when you need deletion.
 Database and scope identifiers remain fixed in this dialog to prevent accidental trust-boundary changes.
 
+### Memory status and recovery
+
+Open **OptChat settings** and select **Show memory status**.
+The status shows retained originals, summaries, publications, active turns, and compactor jobs.
+Expired running jobs and failed jobs appear separately.
+The status does not expose original payloads or certify summary accuracy.
+
+Finish or interrupt active turns before selecting **Retry failed compaction**.
+Confirm the possible model costs.
+This action requeues failed jobs and preserves originals.
+Processing resumes on the next session reconciliation. It does not activate a disabled adapter.
+
+The lease fix recovers an expired lease only when its fence remains unchanged.
+A worker that another worker or retention change replaced discards its result.
+It does not fail the replacement job or publish stale evidence.
+
 ### Explicit configuration
 
 Use explicit options when you need a custom database path or trust scope.

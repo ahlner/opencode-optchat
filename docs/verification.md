@@ -279,6 +279,58 @@ Packed exports, TypeScript types, 23 native lifecycle groups, and 12 managed set
 The lifecycle diagnostics are in `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-VbOhy4`.
 The settings diagnostics are in `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-CSHx0f`.
 
+### Managed service retest after the readiness correction
+
+The operator requested a test with the actual configured OpenCode instance.
+Four new two-session trials used the existing 2.0.26 service and enabled remote models.
+Each trial used its own temporary project, database, and test sessions.
+Existing sessions, global configuration, and credentials remained unchanged.
+
+The first trial used `edenai/greenference/glm-5.3-flash`.
+The provider reported that the model was temporarily unavailable.
+The database retained originals and generation zero without permanently disabling the session.
+This trial did not complete the semantic test.
+
+The second trial used `edenai/mistral/devstral-small-latest`.
+Session A published evidence. Session B searched and expanded summaries but passed a summary ID to the original-source tool.
+The bounded trial failed before a valid final answer.
+
+The third trial used `edenai/databricks/databricks-gpt-5-4-mini`.
+Its final facts matched the fixture, but it read a tool call and user message instead of the original tool result.
+The unchanged verifier rejected the trial.
+
+The fourth trial used the same GPT model and passed the exact original-result requirement.
+Tool descriptions now explain leaf `sourceId`, tool-result kinds, and searches for result identifiers or `callId`.
+The test request names the fixed search identifier but does not supply random values, error codes, or proposal identifiers.
+The harness permits 12 primary context attempts per session and retains its 80-summary-call limit.
+
+Session B read the original tool result from A with `optchat_search` and `optchat_source`.
+It reported retry value `80710`, failure code `E_TEST_3394ce71d8`, and proposal `P_3394ce71d8` as not implemented.
+It also reported Bun, 23 passed checks, and zero failed checks.
+The verifier checked all values, the read-original citation, and foreign transcript isolation.
+Session B used three primary context calls. The report observed 13 summary calls at verification time.
+
+A native agent-selection request and another message in B also completed successfully with the real model.
+The follow-up retained all 15 existing originals, generation zero, and an enabled session.
+Its separate `continuation-report.json` records those checks.
+This test did not force the competing-worker readiness race on the managed service.
+The deterministic held-lease regression remains the evidence for that exact race.
+
+The corrected test harness passed 61 deterministic tests with 11,663 assertions and TypeScript checks.
+The packed plugin passed all 23 private lifecycle groups and 12 managed settings groups.
+The private integration model remains a loopback fixture, separate from these real-provider trials.
+
+Diagnostics, in trial order, followed by the packed integration directories:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-real-host-9CMx0z
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-real-host-k5tDPv
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-real-host-2FqvKc
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-real-host-gFryNS
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-BkkkQi
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-oiO0rb
+```
+
 The private package and lifecycle integration still uses a controlled local model.
 The real host test establishes one concrete two-session semantic case after the documented corrections.
 It does not establish a general recall or hallucination rate.

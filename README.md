@@ -270,12 +270,17 @@ It does not read credentials or change global configuration.
 It creates two new sessions in a separate temporary project.
 Existing sessions remain unchanged.
 
+Set both `OPTCHAT_REAL_PROVIDER` and `OPTCHAT_REAL_MODEL` to select another enabled model for this test.
+The override affects only the new test sessions and their compactor.
+It does not change the service's default model.
+The script does not select a fallback automatically.
+
 Session A produces controlled fixture evidence.
 Session B receives the question and OptChat memory, not A's dialogue.
 It must read the original tool record and report random values, error codes, and proposal status correctly.
 The fixture deployment is not a real deployment.
 
-The script limits primary steps and summary calls.
+The script permits at most 12 primary context attempts per session and 80 summary API calls.
 Without `OPTCHAT_REAL_TEST=1`, it makes no model calls.
 It retains new test sessions and local diagnostics for review.
 

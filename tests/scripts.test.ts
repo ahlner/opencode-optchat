@@ -4,6 +4,14 @@ import { join, resolve } from "node:path";
 import { Engine, Store, sourceKey } from "../src/index.ts";
 import { verifyRealHost } from "../scripts/verify-real-host.ts";
 
+test("real-host model override rejects an incomplete selection before contacting OpenCode", async () => {
+  for (const override of [{ OPTCHAT_REAL_PROVIDER: "fixture" }, { OPTCHAT_REAL_MODEL: "fixture" }]) {
+    const proc = Bun.spawn([process.execPath, resolve("scripts/real-host-test.ts")], { env: { PATH: process.env.PATH, OPTCHAT_REAL_TEST: "1", ...override }, stdout: "pipe", stderr: "pipe" });
+    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+    expect(code).not.toBe(0); expect(stderr).toContain("Set both OPTCHAT_REAL_PROVIDER and OPTCHAT_REAL_MODEL");
+  }
+});
+
 test("offline real-host verifier checks exact evidence and read-original citations without model calls", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-real-verifier-"));
   try {

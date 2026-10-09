@@ -394,7 +394,7 @@ class Engine {
       return false;
     const report = (event, error) => {
       try {
-        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...job.input.type === "leaf" ? { sourceId: job.input.source, tree: job.input.tree, start: job.input.start, count: 1 } : job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : {}, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
       } catch {}
     };
     report("job.claim");
@@ -880,4 +880,4 @@ export {
   turnKey
 };
 
-//# debugId=CBA143B65911CEC764756E2164756E21
+//# debugId=D181D42B5480530764756E2164756E21

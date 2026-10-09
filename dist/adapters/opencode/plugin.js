@@ -399,7 +399,7 @@ class Engine {
       return false;
     const report = (event, error) => {
       try {
-        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...job.input.type === "leaf" ? { sourceId: job.input.source, tree: job.input.tree, start: job.input.start, count: 1 } : job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : {}, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
       } catch {}
     };
     report("job.claim");
@@ -938,6 +938,7 @@ var schema = {
   additionalProperties: false,
   properties: {
     enabled: { type: "boolean" },
+    captureContent: { type: "boolean" },
     database: { type: "string", minLength: 1 },
     scopeId: { type: "string", minLength: 1 },
     compactorModel: { type: "object", additionalProperties: false, properties: { providerID: { type: "string", minLength: 1 }, id: { type: "string", minLength: 1 } }, required: ["providerID", "id"] },
@@ -1063,7 +1064,8 @@ async function setupSettings(ctx, start) {
     scopeId,
     memoryBytes: 16000,
     safetyTokens: 2048,
-    waitMs: 30000
+    waitMs: 30000,
+    captureContent: false
   };
   let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } : { ...defaults, ...await ctx.storage.get("settings.v1") };
   let cleanup, registrations = [];
@@ -1130,6 +1132,7 @@ async function setupSettings(ctx, start) {
     }
   };
   const validate = async (value) => {
+    insist(value.captureContent === undefined || typeof value.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
     insist(isAbsolute(value.database) && value.scopeId.trim(), "CONFIG", "Use an absolute database path and a nonempty scope");
     insist(Number.isSafeInteger(value.memoryBytes) && value.memoryBytes >= 0 && Number.isSafeInteger(value.safetyTokens) && value.safetyTokens >= 256, "CONFIG", "Use valid memory and safety budgets");
     insist(Number.isSafeInteger(value.waitMs) && value.waitMs >= 1 && value.waitMs <= 300000, "CONFIG", "Use a wait between 1 and 300000 milliseconds");
@@ -1142,7 +1145,7 @@ async function setupSettings(ctx, start) {
     }
   };
   await activate(settings);
-  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
+  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
   let rpc;
   try {
     rpc = await ctx.rpc.register(SettingsRpc, {
@@ -1239,6 +1242,8 @@ function pause(ms, signal) {
 // src/adapters/opencode/diagnostics.ts
 import { appendFileSync, closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, renameSync, statSync } from "fs";
 var fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash", "boundary", "prefix", "expectedScopeHash", "actualScopeHash", "expectedProjectHash", "actualProjectHash"]);
+for (const field of ["requestId", "inputHash", "sourceId", "tree", "start", "count", "captureContent"])
+  fields.add(field);
 function diagnosticCode(error) {
   if (error instanceof MemoryError)
     return /^[A-Z_]{1,64}$/.test(error.code) ? error.code : "MEMORY_ERROR";
@@ -1248,16 +1253,23 @@ function diagnosticCode(error) {
 class Diagnostics {
   counters;
   maxBytes;
+  captureContent;
+  maxContentBytes;
   path;
+  contentPath;
   fd;
+  contentFd;
   sequence = 0;
   closed = false;
   spans = new Map;
   timer;
-  constructor(database, counters = () => ({}), intervalMs = 5000, maxBytes = 2 * 1024 * 1024) {
+  constructor(database, counters = () => ({}), intervalMs = 5000, maxBytes = 2 * 1024 * 1024, captureContent = false, maxContentBytes = 8 * 1024 * 1024) {
     this.counters = counters;
     this.maxBytes = maxBytes;
+    this.captureContent = captureContent;
+    this.maxContentBytes = maxContentBytes;
     this.path = `${database}.diagnostics.ndjson`;
+    this.contentPath = `${database}.content.ndjson`;
     let previous = performance.now();
     this.timer = setInterval(() => {
       const now = performance.now();
@@ -1271,7 +1283,42 @@ class Diagnostics {
     try {
       moduleHash = new Bun.CryptoHasher("sha256").update(readFileSync(import.meta.path)).digest("hex");
     } catch {}
-    this.emit("runtime.start", { moduleHash });
+    this.emit("runtime.start", { moduleHash, captureContent });
+  }
+  content(event, details) {
+    if (this.closed || !this.captureContent)
+      return;
+    const { requestId, jobId, parentId, model, prompt, response } = details;
+    try {
+      const line = `${JSON.stringify({ time: new Date().toISOString(), runId: this.runId, pid: process.pid, event, requestId, jobId, parentId, ...model ? { model: { providerID: model.providerID, id: model.id } } : {}, prompt, response })}
+`;
+      if (Buffer.byteLength(line, "utf8") > 1024 * 1024) {
+        this.emit("content.omitted", { requestId, jobId, errorCode: "CONTENT_TOO_LARGE" });
+        return;
+      }
+      if (this.contentFd !== undefined && fstatSync(this.contentFd).ino !== statSync(this.contentPath).ino) {
+        closeSync(this.contentFd);
+        this.contentFd = undefined;
+      }
+      if (this.contentFd === undefined) {
+        this.contentFd = openSync(this.contentPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 384);
+        fchmodSync(this.contentFd, 384);
+      }
+      if (fstatSync(this.contentFd).size >= this.maxContentBytes) {
+        closeSync(this.contentFd);
+        this.contentFd = undefined;
+        renameSync(this.contentPath, `${this.contentPath}.1`);
+        this.contentFd = openSync(this.contentPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 384);
+      }
+      appendFileSync(this.contentFd, line);
+    } catch {
+      if (this.contentFd !== undefined) {
+        try {
+          closeSync(this.contentFd);
+        } catch {}
+        this.contentFd = undefined;
+      }
+    }
   }
   counts() {
     try {
@@ -1346,6 +1393,12 @@ class Diagnostics {
         closeSync(this.fd);
       } catch {}
       this.fd = undefined;
+    }
+    if (this.contentFd !== undefined) {
+      try {
+        closeSync(this.contentFd);
+      } catch {}
+      this.contentFd = undefined;
     }
   }
 }
@@ -1424,6 +1477,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
   insist(Number.isSafeInteger(memoryBytes) && memoryBytes >= 0 && Number.isSafeInteger(safetyTokens) && safetyTokens >= 256, "CONFIG", "Invalid memory/safety budget");
+  insist(config.captureContent === undefined || typeof config.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
   await mkdir(dirname(config.database), { recursive: true, mode: 448 });
   const store = new Store(config.database);
   try {
@@ -1437,7 +1491,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     store.close();
     throw error;
   }
-  const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()));
+  const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()), 5000, 2 * 1024 * 1024, config.captureContent === true);
   diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
   const falseShutdownDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed|Event stream failed): RangeError: Cannot use a closed database$/;
@@ -1455,7 +1509,18 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
     return diagnostics.span("compactor.request", () => compactorRequest(async (signal) => diagnostics.span("compactor.generate", async () => {
-      const result = await abortable(() => ctx.generate.text({ model: config.compactorModel, prompt }, { signal }), signal);
+      const requestId = crypto.randomUUID(), jobId = activeJob, parentId = activeOperation;
+      diagnostics.emit("compactor.sent", { requestId, jobId, parentId, inputHash: hash(prompt) });
+      diagnostics.content("compactor.request", { requestId, jobId, parentId, model: config.compactorModel, prompt });
+      let result;
+      try {
+        result = await abortable(() => ctx.generate.text({ model: config.compactorModel, prompt }, { signal }), signal);
+      } catch (error) {
+        diagnostics.emit("compactor.failed", { requestId, jobId, parentId, errorCode: diagnosticCode(error) });
+        throw error;
+      }
+      diagnostics.content("compactor.response", { requestId, jobId, parentId, model: config.compactorModel, response: result.text });
+      diagnostics.emit("compactor.received", { requestId, jobId, parentId, outputBytes: Buffer.byteLength(result.text, "utf8") });
       diagnostics.emit("compactor.result", { jobId: activeJob, outputBytes: Buffer.byteLength(result.text, "utf8") });
       return result.text;
     }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
@@ -2074,4 +2139,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=6DD1C5DA90105D5C64756E2164756E21
+//# debugId=26EF1C773742889064756E2164756E21

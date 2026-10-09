@@ -8,11 +8,11 @@ import { memoryPolicy } from "./policy.ts";
 import { setupSettings } from "./settings.ts";
 import { compactorRequest } from "./compactor-request.ts";
 import { abortable } from "../../core/abort.ts";
-import { Diagnostics } from "./diagnostics.ts";
+import { Diagnostics, diagnosticCode } from "./diagnostics.ts";
 import { automaticScope, sameDirectory } from "./settings-scope.ts";
 import { createRecoveryLoop } from "./recovery-loop.ts";
 
-interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
+interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
@@ -23,6 +23,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
   insist(Number.isSafeInteger(memoryBytes) && memoryBytes >= 0 && Number.isSafeInteger(safetyTokens) && safetyTokens >= 256, "CONFIG", "Invalid memory/safety budget");
+  insist(config.captureContent === undefined || typeof config.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
   await mkdir(dirname(config.database), { recursive: true, mode: 0o700 });
   const store = new Store(config.database);
   // A host-bound worker must never send another scope's jobs to its configured provider.
@@ -32,7 +33,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     insist(store.all<{ id: string }>("scopes").every(scope => scope.id === config.scopeId), "SCOPE_MISMATCH", "This database contains jobs from a different trust scope");
     store.set("settings", "adapterScope", config.scopeId);
   }); } catch (error) { store.close(); throw error; }
-  const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()) as Record<string, number>);
+  const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()) as Record<string, number>, 5000, 2 * 1024 * 1024, config.captureContent === true);
   diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   // Recover only the exact readiness error that older adapters incorrectly made permanent.
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
@@ -49,7 +50,14 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
     return diagnostics.span("compactor.request", () => compactorRequest(async signal => diagnostics.span("compactor.generate", async () => {
-      const result = await abortable(() => ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal }), signal);
+      const requestId = crypto.randomUUID(), jobId = activeJob, parentId = activeOperation;
+      diagnostics.emit("compactor.sent", { requestId, jobId, parentId, inputHash: hash(prompt) });
+      diagnostics.content("compactor.request", { requestId, jobId, parentId, model: config.compactorModel, prompt });
+      let result;
+      try { result = await abortable(() => ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal }), signal); }
+      catch (error) { diagnostics.emit("compactor.failed", { requestId, jobId, parentId, errorCode: diagnosticCode(error) }); throw error; }
+      diagnostics.content("compactor.response", { requestId, jobId, parentId, model: config.compactorModel, response: result.text });
+      diagnostics.emit("compactor.received", { requestId, jobId, parentId, outputBytes: Buffer.byteLength(result.text, "utf8") });
       diagnostics.emit("compactor.result", { jobId: activeJob, outputBytes: Buffer.byteLength(result.text, "utf8") });
       return result.text;
     }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });

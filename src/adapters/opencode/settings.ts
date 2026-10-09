@@ -14,7 +14,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
   const scopeId = automaticScope(ctx.location.project.id, ctx.location.project.canonical), identity = scopeId.slice("local:".length);
   const defaults: Settings = {
     enabled: false, database: join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "optchat", identity, "memory.sqlite"),
-    scopeId, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000,
+    scopeId, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false,
   };
   let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } as Settings :
     { ...defaults, ...await ctx.storage.get("settings.v1") as Partial<Settings> };
@@ -58,6 +58,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
     catch (error) { await stop(); throw error; }
   };
   const validate = async (value: Settings) => {
+    insist(value.captureContent === undefined || typeof value.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
     insist(isAbsolute(value.database) && value.scopeId.trim(), "CONFIG", "Use an absolute database path and a nonempty scope");
     insist(Number.isSafeInteger(value.memoryBytes) && value.memoryBytes >= 0 && Number.isSafeInteger(value.safetyTokens) && value.safetyTokens >= 256,
       "CONFIG", "Use valid memory and safety budgets");
@@ -72,7 +73,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
     }
   };
   await activate(settings);
-  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs"].filter(k => (settings as any)[k] !== undefined).map(k => [k, (settings as any)[k]]));
+  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent"].filter(k => (settings as any)[k] !== undefined).map(k => [k, (settings as any)[k]]));
   let rpc;
   try { rpc = await ctx.rpc.register(SettingsRpc, {
     read: async () => publicSettings(),

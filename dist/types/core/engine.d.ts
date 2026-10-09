@@ -20,6 +20,10 @@ export interface EngineOptions {
         fence: number;
         leaseUntil: number;
         errorCode?: string;
+        sourceId?: string;
+        tree?: string;
+        start?: number;
+        count?: number;
     }) => void;
 }
 export declare class Engine {

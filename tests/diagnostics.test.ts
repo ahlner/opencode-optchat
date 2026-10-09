@@ -4,6 +4,44 @@ import { join } from "node:path";
 import { Diagnostics, diagnosticCode } from "../src/adapters/opencode/diagnostics.ts";
 import { MemoryError, Engine, Store } from "../src/index.ts";
 
+test("content capture requires opt-in and records only correlated public model fields", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-content-"));
+  const off = new Diagnostics(join(root, "off.sqlite"));
+  const on = new Diagnostics(join(root, "on.sqlite"), undefined, 5000, 2048, true);
+  try {
+    off.content("compactor.request", { requestId: "id", prompt: "PRIVATE_PROMPT" });
+    expect(await Bun.file(off.contentPath).exists()).toBe(false);
+    on.content("compactor.request", { requestId: "same", jobId: "job", prompt: "Exact 😀 request", model: { providerID: "fixture", id: "fixture", apiKey: "NOT_CAPTURED" } as any, headers: "NOT_CAPTURED", reasoning: "NOT_CAPTURED" } as any);
+    on.content("compactor.response", { requestId: "same", jobId: "job", response: "Exact 😀 answer" });
+    const text = await Bun.file(on.contentPath).text(), rows = text.trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.map(r => r.requestId)).toEqual(["same", "same"]);
+    expect(rows[0].prompt).toBe("Exact 😀 request"); expect(rows[1].response).toBe("Exact 😀 answer");
+    expect(text).not.toContain("NOT_CAPTURED"); expect(await Bun.file(on.path).text()).not.toContain("Exact 😀");
+    expect((await stat(on.contentPath)).mode & 0o777).toBe(0o600);
+    on.content("compactor.response", { requestId: "oversized", response: "x".repeat(1024 * 1024) });
+    expect(await Bun.file(on.contentPath).text()).toBe(text);
+    expect(await Bun.file(on.path).text()).toContain("CONTENT_TOO_LARGE");
+    on.close(); on.content("compactor.response", { requestId: "late", response: "late" });
+    expect(await Bun.file(on.contentPath).text()).toBe(text);
+  } finally { off.close(); on.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("content capture rotates across instances and never follows a symlink", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-content-")), database = join(root, "memory.sqlite");
+  const a = new Diagnostics(database, undefined, 5000, 2048, true, 400), b = new Diagnostics(database, undefined, 5000, 2048, true, 400);
+  try {
+    for (let i = 0; i < 20; i++) (i % 2 ? a : b).content("compactor.request", { requestId: String(i), prompt: "fixture" });
+    expect((await stat(a.contentPath)).size).toBeLessThan(800);
+    expect((await stat(`${a.contentPath}.1`)).size).toBeLessThan(800);
+    a.close(); b.close();
+    const target = join(root, "target"); await Bun.write(target, "Untouched");
+    await rm(a.contentPath); await symlink(target, a.contentPath);
+    const blocked = new Diagnostics(database, undefined, 5000, 2048, true);
+    blocked.content("compactor.request", { requestId: "blocked", prompt: "Not written" }); blocked.close();
+    expect(await Bun.file(target).text()).toBe("Untouched");
+  } finally { a.close(); b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("diagnostics show waiting phases and counters without retaining payloads or raw errors", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-diagnostic-"));
   const diagnostic = new Diagnostics(join(root, "memory.sqlite"), () => ({ pending: 2, running: 1 }), 5);

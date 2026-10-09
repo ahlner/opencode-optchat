@@ -1,5 +1,28 @@
 # Verification
 
+## Opt-in compactor content diagnostics
+
+Content capture remains disabled by default and requires a separate confirmation in the terminal dialog.
+The capture file contains the exact SDK compactor prompt and visible answer text.
+It excludes provider objects, hidden reasoning, headers, and configured credentials.
+User-supplied secrets can remain inside captured originals.
+
+Request IDs correlate prompts, answers, job IDs, model identifiers, and metadata phases.
+Leaf claim metadata includes source identifiers and tree coordinates.
+The metadata log remains free of payloads, including when content capture is enabled.
+Cancellation or provider failure can leave a request without an answer.
+
+Tests cover consent, default inactivity, exact Unicode text, private file permissions, symlink rejection, rotation, and oversized-entry omission.
+The deterministic suite passed 93 tests with 11,923 assertions. TypeScript and documentation checks passed.
+
+The packed host lifecycle passed 23 groups in `optchat-integration-jrZpjH` with 125 loopback requests.
+The packed settings and recovery test passed 25 groups in `optchat-integration-7NXIie` with 73 loopback requests.
+The settings test also checked captured native SDK requests and answers with matching request and job identifiers.
+The dependency audit passed for 428 installed package instances with no third-party bundle sources.
+The native terminal test passed six groups in `optchat-tui-fRBfAK` without model calls.
+
+These tests use private fixtures. No user configuration or existing conversation changed, and no real-provider calls ran.
+
 ## Lossless preparation optimization
 
 The adapter stores complete inputs locally when they fit within the existing 512-byte summary limit.

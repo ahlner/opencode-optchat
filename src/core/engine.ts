@@ -10,7 +10,7 @@ const jobFailureCode = (error: unknown) => {
   const text = String(error ?? "");
   return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
-export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string }) => void }
+export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string; sourceId?: string; tree?: string; start?: number; count?: number }) => void }
 const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 export class Engine {
   readonly options: EngineOptions;
@@ -176,7 +176,7 @@ export class Engine {
     signal?.throwIfAborted();
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job) return false;
-    const report = (event: string, error?: unknown) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...(error === undefined ? {} : { errorCode: jobFailureCode(error) }) }); } catch {} };
+    const report = (event: string, error?: unknown) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...(job.input.type === "leaf" ? { sourceId: job.input.source, tree: job.input.tree, start: job.input.start, count: 1 } : job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : {}), ...(error === undefined ? {} : { errorCode: jobFailureCode(error) }) }); } catch {} };
     report("job.claim");
     const renewal = setInterval(() => {
       try { if (!this.store.renew(job, this.options.leaseMs)) report("job.renew.unowned"); }

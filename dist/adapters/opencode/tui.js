@@ -9,6 +9,7 @@ var schema = {
   additionalProperties: false,
   properties: {
     enabled: { type: "boolean" },
+    captureContent: { type: "boolean" },
     database: { type: "string", minLength: 1 },
     scopeId: { type: "string", minLength: 1 },
     compactorModel: { type: "object", additionalProperties: false, properties: { providerID: { type: "string", minLength: 1 }, id: { type: "string", minLength: 1 } }, required: ["providerID", "id"] },
@@ -61,13 +62,19 @@ function registerSettingsDialog(ctx) {
         { title: "Show project scope and database", value: "scope" },
         { title: "Show memory status", value: "status" },
         { title: "Retry failed compaction", value: "retry" },
+        { title: `Capture compactor content: ${draft.captureContent ? "enabled" : "disabled"}`, value: "captureContent" },
         { title: "Save settings", value: "save" }
       ] });
       if (!field)
         return;
       if (field === "enabled")
         draft.enabled = !draft.enabled;
-      else if (field === "model") {
+      else if (field === "captureContent") {
+        if (draft.captureContent)
+          draft.captureContent = false;
+        else if (await ctx.ui.dialog.confirm({ title: "Capture private content?", message: "This saves complete compactor prompts and visible model responses locally. They can contain confidential conversation data or secrets. Disable capture after diagnosis.", label: { confirm: "Capture", cancel: "Cancel" } }))
+          draft.captureContent = true;
+      } else if (field === "model") {
         const models = (await ctx.client.model.list({ location })).data.filter((m) => m.enabled && m.limit.context && m.limit.output);
         const selected = await ctx.ui.dialog.select({ title: "Compactor model", options: models.map((m) => ({ title: `${m.providerID}/${m.id}`, value: JSON.stringify({ providerID: m.providerID, id: m.id }) })) });
         if (selected)
@@ -75,6 +82,7 @@ function registerSettingsDialog(ctx) {
       } else if (field === "scope")
         await ctx.ui.dialog.alert({ title: "Project memory", message: `Scope: ${draft.scopeId}
 Database: ${draft.database}
+Content log: ${draft.database}.content.ndjson
 This dialog cannot change the trust boundary.` });
       else if (field === "status") {
         const status = await rpc.status({}, options);
@@ -252,4 +260,4 @@ export {
   tui_default as default
 };
 
-//# debugId=76597E0E96DE53F264756E2164756E21
+//# debugId=3894711D4C29E1B864756E2164756E21

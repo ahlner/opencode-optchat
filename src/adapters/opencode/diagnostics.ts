@@ -3,19 +3,23 @@ import { MemoryError } from "../../core/types.ts";
 
 // Keep this allowlist independent from provider errors and conversation payloads.
 const fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash", "boundary", "prefix", "expectedScopeHash", "actualScopeHash", "expectedProjectHash", "actualProjectHash"]);
+for (const field of ["requestId", "inputHash", "sourceId", "tree", "start", "count", "captureContent"]) fields.add(field);
 export function diagnosticCode(error: unknown): string {
   if (error instanceof MemoryError) return /^[A-Z_]{1,64}$/.test(error.code) ? error.code : "MEMORY_ERROR";
   return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name) ? error.name : "ERROR";
 }
 export class Diagnostics {
   readonly path: string;
+  readonly contentPath: string;
   private fd?: number;
+  private contentFd?: number;
   private sequence = 0;
   private closed = false;
   private spans = new Map<number, { phase: string; started: number; parentId?: number }>();
   private timer: ReturnType<typeof setInterval>;
-  constructor(database: string, private counters: () => Record<string, number> = () => ({}), intervalMs = 5000, private maxBytes = 2 * 1024 * 1024) {
+  constructor(database: string, private counters: () => Record<string, number> = () => ({}), intervalMs = 5000, private maxBytes = 2 * 1024 * 1024, private captureContent = false, private maxContentBytes = 8 * 1024 * 1024) {
     this.path = `${database}.diagnostics.ndjson`;
+    this.contentPath = `${database}.content.ndjson`;
     let previous = performance.now();
     this.timer = setInterval(() => {
       const now = performance.now();
@@ -26,7 +30,20 @@ export class Diagnostics {
     this.timer.unref();
     let moduleHash: string | undefined;
     try { moduleHash = new Bun.CryptoHasher("sha256").update(readFileSync(import.meta.path)).digest("hex"); } catch {}
-    this.emit("runtime.start", { moduleHash });
+    this.emit("runtime.start", { moduleHash, captureContent });
+  }
+  content(event: "compactor.request" | "compactor.response", details: { requestId: string; jobId?: string; parentId?: number; model?: { providerID: string; id: string }; prompt?: string; response?: string }) {
+    if (this.closed || !this.captureContent) return;
+    // Record only the public request prompt and visible response text, never provider objects.
+    const { requestId, jobId, parentId, model, prompt, response } = details;
+    try {
+      const line = `${JSON.stringify({ time: new Date().toISOString(), runId: this.runId, pid: process.pid, event, requestId, jobId, parentId, ...(model ? { model: { providerID: model.providerID, id: model.id } } : {}), prompt, response })}\n`;
+      if (Buffer.byteLength(line, "utf8") > 1024 * 1024) { this.emit("content.omitted", { requestId, jobId, errorCode: "CONTENT_TOO_LARGE" }); return; }
+      if (this.contentFd !== undefined && fstatSync(this.contentFd).ino !== statSync(this.contentPath).ino) { closeSync(this.contentFd); this.contentFd = undefined; }
+      if (this.contentFd === undefined) { this.contentFd = openSync(this.contentPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600); fchmodSync(this.contentFd, 0o600); }
+      if (fstatSync(this.contentFd).size >= this.maxContentBytes) { closeSync(this.contentFd); this.contentFd = undefined; renameSync(this.contentPath, `${this.contentPath}.1`); this.contentFd = openSync(this.contentPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600); }
+      appendFileSync(this.contentFd, line);
+    } catch { if (this.contentFd !== undefined) { try { closeSync(this.contentFd); } catch {} this.contentFd = undefined; } }
   }
   private counts() { try { return this.counters(); } catch { return {}; } }
   emit(event: string, details: Record<string, unknown> = {}) {
@@ -62,5 +79,6 @@ export class Diagnostics {
     this.emit("runtime.stop", { active: this.spans.size });
     this.closed = true; clearInterval(this.timer);
     if (this.fd !== undefined) { try { closeSync(this.fd); } catch {} this.fd = undefined; }
+    if (this.contentFd !== undefined) { try { closeSync(this.contentFd); } catch {} this.contentFd = undefined; }
   }
 }

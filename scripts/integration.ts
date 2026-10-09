@@ -118,7 +118,7 @@ try {
      assert(settings.database.startsWith(join(root, "data")), "Automatic database stays in the private server data directory");
       dbPath = settings.database;
       assert.equal((await settingsCall("status")).databaseExists, false, "Status does not create an inactive database");
-     await settingsCall("write", { ...settings, enabled: true, compactorModel: { providerID: "fixture", id: "fixture" } });
+     await settingsCall("write", { ...settings, enabled: true, captureContent: true, compactorModel: { providerID: "fixture", id: "fixture" } });
    }
    if (gitPackage) {
      // Creating a session does not start its Location services. No model call is needed.
@@ -281,6 +281,12 @@ try {
         assert(diagnosticRows.some(row => row.phase === "background.recovery" && row.event === "phase.end" && !row.errorCode), "The automatic worker has a completed diagnostic phase");
         assert(diagnosticRows.some(row => row.event === "recovery.paused" && row.attempt === 3), "The automatic stall limit is visible without payloads");
        assert(!/PAIR_OK|A_DECISION|BLOCKED_BY_SLOW_HISTORY|RESUME_AFTER_SLOW_HISTORY|PRIVATE_BROKEN_JOB_PAYLOAD|FAILED_REQUIRED_JOB_CURRENT|AFTER_PROJECT_DISCOVERY_CURRENT/.test(diagnosticText), "Diagnostics exclude original and model payloads");
+       const contentText = await Bun.file(`${dbPath}.content.ndjson`).text();
+       const contentRows = contentText.trim().split("\n").map(line => JSON.parse(line));
+       const capturedRequests = new Map(contentRows.filter(row => row.event === "compactor.request").map(row => [row.requestId, row]));
+       assert(contentRows.some(row => row.event === "compactor.response"), "Opt-in capture includes visible model answers");
+       assert(contentText.includes("UNTRUSTED_JSON_DATA"), "Opt-in capture includes actual model prompts");
+       for (const row of contentRows.filter(row => row.event === "compactor.response")) assert(capturedRequests.get(row.requestId)?.jobId === row.jobId, "Answers correlate with their request and job");
          console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "native input during slow preparation", "cancelled claims and available settings", "native input with failed memory dependencies", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "pause survives restart and native events", "confirmed automatic recovery without data loss", "cold native compaction preserves originals", "cold compacted fork retains original checkpoint"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();

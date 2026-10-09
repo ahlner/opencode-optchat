@@ -139,6 +139,33 @@ It does not prove a deadlock or identify a remote provider's internal state.
 Heartbeat gaps can indicate event-loop blocking, process suspension, or process termination.
 Logs contain private activity metadata. Review them before sharing them publicly.
 
+#### Optional compactor content capture
+
+Content capture starts disabled. It records only compactor requests and visible model answers, not primary conversation requests or answers.
+Use this procedure for diagnosis:
+
+1. Open **OptChat settings** from the command palette.
+2. Select **Capture compactor content: disabled**.
+3. Confirm the private-content warning.
+4. Select **Save settings**.
+5. Reproduce the problem.
+6. Disable capture and save after diagnosis.
+
+Explicit plugin configurations can set `captureContent: true` instead.
+The server writes `<database>.content.ndjson` and keeps one rotated file with suffix `.1`.
+These files use mode `0600` and rotate near eight MiB.
+Entries larger than one MiB are omitted with `CONTENT_TOO_LARGE` in the metadata log, not silently clipped.
+
+Each request and answer carries the same request ID, job ID, runtime ID, and model identifier.
+The metadata log also records request hashes and original source coordinates for claimed leaf jobs.
+Cancelled or failed calls can have a request without an answer.
+Local lossless processing creates no model request and therefore no content entry.
+
+Captured prompts can contain confidential originals and user-supplied secrets.
+The logger does not add authentication headers, configured API keys, hidden reasoning, or private provider objects.
+Disabling capture stops new writes. It does not delete previous files.
+Do not publish these files without a separate content review.
+
 ### Existing sessions and preparation limits
 
 Enabling memory in an existing session can require many background summary calls.

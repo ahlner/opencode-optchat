@@ -17,16 +17,21 @@ export function registerSettingsDialog(ctx: Context) {
         { title: `Admission wait: ${draft.waitMs} milliseconds`, value: "waitMs" },
         { title: "Show project scope and database", value: "scope" },
         { title: "Show memory status", value: "status" },
-        { title: "Retry failed compaction", value: "retry" },
+         { title: "Retry failed compaction", value: "retry" },
+         { title: `Capture compactor content: ${draft.captureContent ? "enabled" : "disabled"}`, value: "captureContent" },
         { title: "Save settings", value: "save" },
       ] });
       if (!field) return;
       if (field === "enabled") draft.enabled = !draft.enabled;
+      else if (field === "captureContent") {
+        if (draft.captureContent) draft.captureContent = false;
+        else if (await ctx.ui.dialog.confirm({ title: "Capture private content?", message: "This saves complete compactor prompts and visible model responses locally. They can contain confidential conversation data or secrets. Disable capture after diagnosis.", label: { confirm: "Capture", cancel: "Cancel" } })) draft.captureContent = true;
+      }
       else if (field === "model") {
         const models = (await ctx.client.model.list({ location })).data.filter(m => m.enabled && m.limit.context && m.limit.output);
         const selected = await ctx.ui.dialog.select({ title: "Compactor model", options: models.map(m => ({ title: `${m.providerID}/${m.id}`, value: JSON.stringify({ providerID: m.providerID, id: m.id }) })) });
         if (selected) draft.compactorModel = JSON.parse(selected);
-      } else if (field === "scope") await ctx.ui.dialog.alert({ title: "Project memory", message: `Scope: ${draft.scopeId}\nDatabase: ${draft.database}\nThis dialog cannot change the trust boundary.` });
+      } else if (field === "scope") await ctx.ui.dialog.alert({ title: "Project memory", message: `Scope: ${draft.scopeId}\nDatabase: ${draft.database}\nContent log: ${draft.database}.content.ndjson\nThis dialog cannot change the trust boundary.` });
       else if (field === "status") {
         const status = await rpc.status({}, options) as MemoryStatus;
         await ctx.ui.dialog.alert({ title: "Memory status", message: `Adapter: ${status.enabled ? "enabled" : "disabled"}\nDatabase: ${status.databaseExists ? "present" : "not created"}\nSessions: ${status.sessions}\nOriginals: ${status.originals}\nSummaries: ${status.summaries}\nPublications: ${status.publications}\nActive memory turns: ${status.activeTurns}\nNative turn markers: ${status.nativeTurns ?? 0}\nJobs: ${JSON.stringify(status.jobs)}\nLast error: ${status.lastError ?? "none"}\nDiagnostics: ${draft.database}.diagnostics.ndjson\nCounts cover this database. Status does not certify summary accuracy.` });

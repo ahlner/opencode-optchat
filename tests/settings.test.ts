@@ -9,7 +9,7 @@ import { memoryStatus } from "../src/adapters/opencode/settings-status.ts";
 async function fixture() {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-settings-"));
   const database = join(root, "memory.sqlite");
-  const initial = { enabled: false, database, scopeId: "test-scope", memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000 };
+  const initial = { enabled: false, database, scopeId: "test-scope", memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false };
   let saved: any = initial, handlers: any, starts = 0, stops = 0, disposed = 0, failStorage = false;
   const context: any = { app: { version: "2.0.26" }, location: { project: { id: "test-project" } }, options: {},
     storage: { get: async () => saved, set: async (_key: string, value: any) => { if (failStorage) throw new Error("storage failure"); saved = value; } },
@@ -29,7 +29,7 @@ test("TUI settings start inactive, validate models, activate, persist, and dispo
   try {
     expect(f.counts().starts).toBe(0); expect(await Bun.file(f.database).exists()).toBe(false);
     expect(await f.handlers.read({})).toEqual(f.initial);
-    for (const next of [{ ...f.enable, compactorModel: undefined }, { ...f.enable, compactorModel: { providerID: "provider", id: "missing" } }, { ...f.enable, memoryBytes: -1 }, { ...f.enable, waitMs: 0 }, { ...f.enable, safetyTokens: 0 }]) {
+    for (const next of [{ ...f.enable, compactorModel: undefined }, { ...f.enable, compactorModel: { providerID: "provider", id: "missing" } }, { ...f.enable, memoryBytes: -1 }, { ...f.enable, waitMs: 0 }, { ...f.enable, safetyTokens: 0 }, { ...f.enable, captureContent: "yes" }]) {
       await expect(f.handlers.write(next)).rejects.toThrow("CONFIG");
     }
     await expect(f.handlers.write({ ...f.enable, scopeId: "another" })).rejects.toThrow("SCOPE_LOCKED");
@@ -97,6 +97,18 @@ test("closing the TUI dialog does not persist draft changes or make model calls"
     ui: { dialog: { select: async () => choices.shift(), alert: async () => {} } },
   } as any);
   await command.run(); expect(writes).toBe(0); expect(calls).toBe(0);
+});
+
+test("the content capture dialog requires consent before saving the opt-in", async () => {
+  for (const approved of [false, true]) {
+    let command: any, saved: any, confirmations = 0;
+    const choices = ["captureContent", "save"];
+    registerSettingsDialog({ location: { directory: "/test" }, keymap: { layer: (factory: any) => { command = factory().commands[0]; } },
+      client: { rpc: () => ({ read: async () => ({ enabled: false, captureContent: false }), write: async (value: any) => { saved = value; return value; } }) },
+      ui: { dialog: { select: async () => choices.shift(), confirm: async (value: any) => { confirmations++; expect(value.message).toContain("confidential"); return approved; }, alert: async () => {} }, toast: { show() {} } },
+    } as any);
+    await command.run(); expect(confirmations).toBe(1); expect(saved.captureContent).toBe(approved);
+  }
 });
 
 test("status reports queue health without originals and retry preserves retained memory", async () => {

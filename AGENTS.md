@@ -35,6 +35,11 @@ Load the `asd-ste100` skill when it is available.
 
 The automated check covers selected structural rules, not complete ASD-STE100 compliance.
 
+Content capture must require explicit opt-in and remain disabled by default.
+Keep captured compactor prompts and visible answers separate from metadata logs.
+Never capture authentication headers, configured credentials, hidden reasoning, or private provider objects.
+Captured originals can contain user-supplied secrets. Do not publish diagnostic content without separate authorization and review.
+
 ## Commands
 
 ```sh

@@ -72,6 +72,68 @@ test("adapter rejects unverified hosts and invalid configuration before creating
     expect(await Bun.file(database).exists()).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("agent and lifecycle readiness events preserve history and admission resumes after another worker finishes", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-event-readiness-"));
+  const database = join(root, "memory.sqlite"), store = new Store(database), engine = new Engine(store);
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    const past = { id: "past", type: "user", time: { created: 1 }, text: "PRESERVED_ORIGINAL" }, record = extract(past)[0]!;
+    engine.register("session", "u:p", "stable"); const originalSnapshot = engine.admit("session", "past").snapshot;
+    engine.append({ sessionId: "session", generation: 0, projectId: "stable", eventKey: record.key, turnId: "past", kind: record.kind, timestamp: record.timestamp, payload: record.payload });
+    engine.finish("session", "past", "completed"); const lease = store.claim(Date.now(), 100000)!;
+    const hooks: Record<string, (event: any) => Promise<void>> = {};
+    const raw = [past, { id: "idle-past", type: "idle", time: { created: 2 }, outcome: "succeeded" },
+      { id: "second", type: "user", time: { created: 3 }, text: "SECOND_ORIGINAL" }, { id: "idle-second", type: "idle", time: { created: 4 }, outcome: "succeeded" },
+      { id: "current", type: "user", time: { created: 5 }, text: "CURRENT" }];
+    const context = (events: boolean) => ({ app: { version: "2.0.26" }, location: { directory: root }, options: { database, scopeId: "u:p", fakeSummarizer: true },
+      session: { hook: async (name: string, callback: any) => { hooks[name] = callback; }, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => raw },
+      agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) },
+      tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () {
+        if (events) for (const type of ["agent.updated", "session.permissions", "session.execution.succeeded"])
+          yield { type, location: { directory: root }, data: { sessionID: "session" } };
+      } },
+    });
+    cleanup = await plugin.setup(context(true) as any) as typeof cleanup; await cleanup?.(); cleanup = undefined;
+    expect(engine.session("session")).toMatchObject({ generation: 0 });
+    expect(engine.sources("session", 0)).toHaveLength(1); engine.validateSnapshot(originalSnapshot);
+    expect(store.get("adapterErrors", "session")).toMatchObject({ code: "MEMORY_NOT_READY" });
+    expect(store.db.query("SELECT status,fence FROM jobs WHERE id=?").get(lease.id)).toEqual({ status: "running", fence: lease.fence });
+    store.db.query("UPDATE jobs SET status='pending' WHERE id=? AND fence=?").run(lease.id, lease.fence);
+    cleanup = await plugin.setup(context(false) as any) as typeof cleanup;
+    const request = { sessionID: "session", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+    await hooks.context!(request);
+    expect(engine.session("session").generation).toBe(0); expect(engine.sources("session", 0)).toHaveLength(2);
+    expect(JSON.stringify(request.system)).toContain("PRESERVED_ORIGINAL"); expect(request.messages).toHaveLength(1);
+    expect(store.get("adapterErrors", "session")).toBeUndefined();
+  } finally { await cleanup?.(); store.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("startup recovers only the known false readiness disable and repeated events preserve genuine disable reasons", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-disable-recovery-"));
+  const database = join(root, "memory.sqlite"), store = new Store(database), engine = new Engine(store);
+  try {
+    engine.register("false-disable", "u:p", "stable"); engine.register("denied", "u:p", "stable"); engine.register("uncertain", "u:p", "stable");
+    const reason = "MemoryError: SESSION_DISABLED: ".repeat(5) + "Agent policy reconciliation failed: MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet";
+    store.set("sessions", "false-disable", { ...engine.session("false-disable"), disabled: reason });
+    engine.register("false-but-denied", "u:p", "stable");
+    store.set("sessions", "false-but-denied", { ...engine.session("false-but-denied"), disabled: reason });
+    store.set("sessions", "denied", { ...engine.session("denied"), disabled: "Memory read permission was revoked" });
+    store.set("sessions", "uncertain", { ...engine.session("uncertain"), disabled: "CHECKPOINT_MISSING: Unknown original mapping" });
+    const hooks: Record<string, (event: any) => Promise<void>> = {};
+    const cleanup = await plugin.setup({ app: { version: "2.0.26" }, options: { database, scopeId: "u:p", fakeSummarizer: true },
+      session: { hook: async (name: string, callback: any) => { hooks[name] = callback; }, get: async ({ sessionID }: any) => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: sessionID === "false-but-denied" ? [{ action: "optchat.read", resource: "u:p", effect: "deny" }] : [] }), context: async () => [] },
+      agent: { get: async () => ({ data: { permissions: [] } }) }, tool: { transform: async (callback: any) => callback({ add() {} }) },
+      event: { subscribe: async function* () { for (let i = 0; i < 5; i++) yield { type: "session.agent.selected", data: { sessionID: "uncertain" } }; } },
+    } as any);
+    try { await expect(hooks.context!({ sessionID: "false-but-denied", agent: "build" })).rejects.toThrow("Memory read permission was revoked"); }
+    finally { await cleanup?.(); }
+    expect(engine.session("false-disable").generation).toBe(0);
+    expect(store.get<any>("sessions", "denied").disabled).toBe("Memory read permission was revoked");
+    expect(store.get<any>("sessions", "uncertain").disabled).toBe("CHECKPOINT_MISSING: Unknown original mapping");
+    expect(store.get<any>("sessions", "false-but-denied").disabled).toBe("Memory read permission was revoked");
+  } finally { store.close(); await rm(root, { recursive: true, force: true }); }
+});
 test("adapter cannot consume jobs from a database assigned to another trust scope", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-adapter-"));
   try {

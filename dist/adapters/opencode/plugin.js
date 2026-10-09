@@ -901,7 +901,7 @@ function memoryStatus(database, enabled) {
       status.jobs.expired = db.query("SELECT count(*) AS count FROM jobs WHERE status='running' AND leaseUntil<=?").get(Date.now()).count;
       const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get();
       if (error)
-        status.lastError = error.code === "COMPACTION_FAILED" ? "COMPACTION_FAILED" : "MEMORY_ERROR";
+        status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
       return status;
     })();
   } finally {
@@ -1094,6 +1094,12 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     store.close();
     throw error;
   }
+  const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
+  for (const session of store.all("sessions"))
+    if (session.disabled && falseReadinessDisable.test(session.disabled)) {
+      delete session.disabled;
+      store.set("sessions", session.id, session);
+    }
   const compactor = config.fakeSummarizer ? new FakeSummarizer : new ModelSummarizer(async (prompt) => {
     const models = await ctx.model.list({});
     const model = models.data.find((m) => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
@@ -1117,6 +1123,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   };
   const disable = (id, reason) => {
     let s = store.get("sessions", id);
+    if (s?.disabled)
+      return;
     if (s && !s.disabled && (engine.sources(id, s.generation).length || store.all("publications").some((p) => p.sessionId === id))) {
       engine.retire(id, "edit");
       s = store.get("sessions", id);
@@ -1127,8 +1135,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     }
   };
   const reconciliationFailure = (id, reason, error) => {
-    if (error instanceof MemoryError && error.code === "COMPACTION_FAILED") {
-      store.set("adapterErrors", id, { code: "COMPACTION_FAILED", timestamp: new Date().toISOString() });
+    if (error instanceof MemoryError && ["COMPACTION_FAILED", "MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
+      store.set("adapterErrors", id, { code: error.code, timestamp: new Date().toISOString() });
       return;
     }
     disable(id, reason);
@@ -1318,7 +1326,11 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Cannot assemble context without model context/output limits");
           const outputTokens = typeof event.options.maxTokens === "number" ? event.options.maxTokens : model.limit.output;
           insist(outputTokens <= model.limit.output, "CONFIG", "Requested output exceeds the model output limit");
-          return assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } });
+          const result = assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } });
+          const previousError = store.get("adapterErrors", event.sessionID);
+          if (previousError && ["MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code))
+            store.remove("adapterErrors", event.sessionID);
+          return result;
         } catch (error) {
           if (!(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline)
             throw error;
@@ -1428,4 +1440,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=00AB0D435A0323B764756E2164756E21
+//# debugId=FBD004239838F22F64756E2164756E21

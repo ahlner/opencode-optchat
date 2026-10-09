@@ -56,6 +56,13 @@ The lease fix recovers an expired lease only when its fence remains unchanged.
 A worker that another worker or retention change replaced discards its result.
 It does not fail the replacement job or publish stale evidence.
 
+`MEMORY_NOT_READY` means that required durable summaries are missing.
+The adapter waits within the admission deadline instead of permanently disabling the session.
+If the deadline expires, the request stops without deleting its history.
+Startup recovers the exact readiness error that earlier versions incorrectly stored as a permanent disable.
+Permission revocations and uncertain original mappings remain blocked.
+Recovery cannot recreate originals that neither the host nor a retained checkpoint exposes.
+
 ### Explicit configuration
 
 Use explicit options when you need a custom database path or trust scope.

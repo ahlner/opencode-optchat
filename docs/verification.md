@@ -257,6 +257,28 @@ Diagnostics:
 
 ## Limits of the evidence
 
+### Agent reconciliation readiness regression
+
+An operator reported repeated `SESSION_DISABLED` prefixes around an agent reconciliation `MEMORY_NOT_READY` error.
+The adapter previously treated readiness as an uncertain original mapping and retired history.
+It also replaced an existing disable reason with each later reconciliation error.
+
+The correction records readiness and other temporary admission conditions without retiring history.
+An existing disable reason remains unchanged across later events.
+Startup removes only the exact known false readiness disable.
+It still checks current native permissions, scope, originals, and checkpoints before admission.
+The correction cannot recreate previously retired originals without an authorized retained source.
+
+Regression tests hold a source job in another worker during agent, permission, and terminal events.
+They check unchanged originals, generation, snapshots, and lease fences.
+After release, admission summarizes both completed turns and resumes without mixed transcripts.
+Recovery tests preserve permission revocations and unknown checkpoint mappings.
+
+The corrected code passed 60 tests with 11,659 assertions and TypeScript checks.
+Packed exports, TypeScript types, 23 native lifecycle groups, and 12 managed settings groups passed.
+The lifecycle diagnostics are in `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-VbOhy4`.
+The settings diagnostics are in `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-CSHx0f`.
+
 The private package and lifecycle integration still uses a controlled local model.
 The real host test establishes one concrete two-session semantic case after the documented corrections.
 It does not establish a general recall or hallucination rate.

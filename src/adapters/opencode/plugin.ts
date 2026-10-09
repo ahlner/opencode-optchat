@@ -27,6 +27,11 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     insist(store.all<{ id: string }>("scopes").every(scope => scope.id === config.scopeId), "SCOPE_MISMATCH", "This database contains jobs from a different trust scope");
     store.set("settings", "adapterScope", config.scopeId);
   }); } catch (error) { store.close(); throw error; }
+  // Recover only the exact readiness error that older adapters incorrectly made permanent.
+  const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
+  for (const session of store.all<Session>("sessions")) if (session.disabled && falseReadinessDisable.test(session.disabled)) {
+    delete session.disabled; store.set("sessions", session.id, session);
+  }
   const compactor = config.fakeSummarizer ? new FakeSummarizer() : new ModelSummarizer(async prompt => {
     const models = await ctx.model.list({});
     const model = models.data.find(m => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
@@ -45,15 +50,16 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   };
   const disable = (id: string, reason: string) => {
     let s = store.get<Session>("sessions", id);
+    if (s?.disabled) return; // Preserve the original cause instead of nesting SESSION_DISABLED on every event.
     if (s && !s.disabled && (engine.sources(id, s.generation).length || store.all<{ sessionId: string }>("publications").some(p => p.sessionId === id))) {
       engine.retire(id, "edit"); s = store.get<Session>("sessions", id);
     }
     if (s) { s.disabled = reason; store.set("sessions", id, s); }
   };
   const reconciliationFailure = (id: string, reason: string, error: unknown) => {
-    if (error instanceof MemoryError && error.code === "COMPACTION_FAILED") {
-      store.set("adapterErrors", id, { code: "COMPACTION_FAILED", timestamp: new Date().toISOString() });
-      return; // Durable failed jobs and originals remain available for retry.
+    if (error instanceof MemoryError && ["COMPACTION_FAILED", "MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
+      store.set("adapterErrors", id, { code: error.code, timestamp: new Date().toISOString() });
+      return; // Operational and readiness errors do not revoke history or native permissions.
     }
     disable(id, reason);
   };
@@ -209,7 +215,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Cannot assemble context without model context/output limits");
           const outputTokens = typeof event.options.maxTokens === "number" ? event.options.maxTokens : model.limit.output;
           insist(outputTokens <= model.limit.output, "CONFIG", "Requested output exceeds the model output limit");
-          return assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } });
+          const result = assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } });
+          const previousError = store.get<{ code: string }>("adapterErrors", event.sessionID);
+          if (previousError && ["MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code)) store.remove("adapterErrors", event.sessionID);
+          return result;
         } catch (error) {
           if (!(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline) throw error;
           // A different SQLite worker can be building the required durable cover.

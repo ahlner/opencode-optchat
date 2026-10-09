@@ -40,7 +40,9 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   const chunk = (d: unknown, finish: string | null) => `data: ${JSON.stringify({ id: "chatcmpl-fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: d, finish_reason: finish }] })}\n\n`;
   return new Response(chunk({ role: "assistant" }, null) + chunk(delta, null) + chunk({}, delta.tool_calls ? "tool_calls" : "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
 } });
-const dbPath = join(root, "memory.sqlite"), pluginPath = resolve(process.env.OPTCHAT_PLUGIN_ENTRY ?? "dist/adapters/opencode/plugin.js");
+let dbPath = join(root, "memory.sqlite");
+const pluginPath = resolve(process.env.OPTCHAT_PLUGIN_ENTRY ?? "dist/adapters/opencode/plugin.js");
+const managedSettings = process.env.OPTCHAT_TUI_SETTINGS === "1";
 const gitPackage = process.env.OPTCHAT_GIT_PACKAGE;
 if (gitPackage) console.log(`Test Git package: ${gitPackage}`);
 await Bun.write(join(root, "project/plugin/index.ts"), `
@@ -53,7 +55,7 @@ export default Plugin.define({ id: "optchat.integration", async setup(ctx) {
 } });`);
 await Bun.write(join(root, "project/plugin/package.json"), JSON.stringify({ name: "optchat-integration", type: "module", exports: "./index.ts" }));
 await Bun.write(join(root, "project/opencode.json"), JSON.stringify({
-  plugins: [{ package: gitPackage ?? join(root, "project/plugin"), options: { database: dbPath, scopeId: "fixture-user:stable-project", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }, ...(gitPackage ? [{ package: join(root, "project/plugin") }] : [])], model: "fixture/fixture",
+  plugins: [{ package: gitPackage ?? join(root, "project/plugin"), ...(managedSettings ? {} : { options: { database: dbPath, scopeId: "fixture-user:stable-project", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }) }, ...(gitPackage ? [{ package: join(root, "project/plugin") }] : [])], model: "fixture/fixture",
   agents: { memory_denied: { description: "Native agent memory-denial fixture", mode: "primary", permissions: [{ action: "optchat.read", resource: "*", effect: "deny" }] } },
   providers: { fixture: { name: "Loopback fixture", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${sink.port}/v1`, apiKey: "local-fixture" }, models: { fixture: { capabilities: { tools: true }, limit: { context: 131072, output: 1024 } } } } },
 }));
@@ -98,6 +100,14 @@ try {
   await ready();
   const create = () => api("POST", "/api/session", { location: { directory: join(root, "project") }, model: { providerID: "fixture", id: "fixture" }, permissions: [{ action: "*", resource: "*", effect: "allow" }] });
    const a = await create();
+   const settingsCall = async (method: string, input: unknown = {}) => (await api("POST", `/api/rpc/optchat.settings/${method}?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`, { input })).output;
+   if (managedSettings) {
+     const settings = await settingsCall("read");
+     assert.equal(settings.enabled, false); assert.equal(await Bun.file(settings.database).exists(), false);
+     assert(settings.database.startsWith(join(root, "data")), "Automatic database stays in the private server data directory");
+     dbPath = settings.database;
+     await settingsCall("write", { ...settings, enabled: true, compactorModel: { providerID: "fixture", id: "fixture" } });
+   }
    if (gitPackage) {
      // Creating a session does not start its Location services. No model call is needed.
      await api("GET", `/api/agent?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`);
@@ -127,11 +137,22 @@ try {
   await until(() => publications().some(p => p.sessionId === b.id), "B publication");
   const priorCount = publications().length;
   proc.kill("SIGKILL"); await proc.exited; proc = start(); await ready();
+  if (managedSettings) assert.equal((await settingsCall("read")).enabled, true, "Settings survive a server crash");
   const c = await create(); const beforeC = requests.length;
   await api("POST", `/api/session/${c.id}/prompt`, { text: "C_CURRENT after restart" });
   await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "restart session C");
   assert(requests.slice(beforeC).some(r => r.messages.some((m: any) => m.role === "system" && JSON.stringify(m.content).includes("A_DECISION"))), "Shared memory survives service restart");
   assert(publications().filter(p => p.sessionId === a.id).length === 1, "Restart never republishes A");
+  if (managedSettings) {
+    await until(() => publications().some(p => p.sessionId === c.id), "C publication before settings change");
+    const settings = await settingsCall("read"), count = publications().length;
+    await settingsCall("write", { ...settings, enabled: false });
+    assert.equal((await settingsCall("read")).enabled, false);
+    assert.equal(publications().length, count, "Disabling does not delete retained originals or publications");
+    await settingsCall("write", { ...settings, memoryBytes: 12000 });
+    assert.equal((await settingsCall("read")).memoryBytes, 12000);
+    console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change"], modelRequests: requests.length }, null, 2));
+  } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });
   await until(() => requests.some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("INTERRUPT_CURRENT"))), "streamed interrupted request");
@@ -266,6 +287,7 @@ try {
     assert(installedEntrypoint.endsWith("/dist/adapters/opencode/plugin.js"), "The Git root export must resolve to the compiled plugin");
   }
   console.log(JSON.stringify({ root, pluginPath: gitPackage ? undefined : pluginPath, gitPackage, installedEntrypoint, checks: ["actual context injection", "foreign transcript isolation", "tool protocol pairs", "search/source/zoom", "terminal publication", "service restart", "deduplication", "interrupted outcome", "failed outcome", "native compaction", "repeated checkpoint restart", "fork inheritance without republishing", "compacted fork inheritance", "independent fork retention", "private child execution", "native permission revocation", "active permission revocation", "native agent memory rule", "partial rewind", "stable-project worktree move", "fork original worktree provenance", "oversized active turn stop", "deletion including checkpoints"], priorCount, modelRequests: requests.length }, null, 2));
+  }
 } catch (error) {
   console.error(`Integration artifacts: ${root}`); throw error;
 } finally {

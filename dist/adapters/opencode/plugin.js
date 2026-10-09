@@ -2,7 +2,7 @@
 // src/adapters/opencode/plugin.ts
 import { Plugin } from "@opencode/plugin";
 import { mkdir } from "fs/promises";
-import { dirname, isAbsolute } from "path";
+import { dirname, isAbsolute as isAbsolute2 } from "path";
 
 // src/core/types.ts
 class MemoryError extends Error {
@@ -825,11 +825,179 @@ function memoryPolicy(rules, scopeId) {
   return { read, share, digest: hash(key(read, share)) };
 }
 
+// src/adapters/opencode/settings.ts
+import { homedir } from "os";
+import { join, isAbsolute } from "path";
+
+// src/adapters/opencode/settings-rpc.ts
+import { Rpc } from "@opencode/plugin/rpc";
+var schema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    database: { type: "string", minLength: 1 },
+    scopeId: { type: "string", minLength: 1 },
+    compactorModel: { type: "object", additionalProperties: false, properties: { providerID: { type: "string", minLength: 1 }, id: { type: "string", minLength: 1 } }, required: ["providerID", "id"] },
+    memoryBytes: { type: "integer", minimum: 0 },
+    safetyTokens: { type: "integer", minimum: 256 },
+    waitMs: { type: "integer", minimum: 1, maximum: 300000 }
+  },
+  required: ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"]
+};
+var SettingsRpc = Rpc.define({ id: "optchat.settings", methods: {
+  read: { input: { type: "object", additionalProperties: false }, output: schema },
+  write: { input: schema, output: schema }
+}, events: {} });
+
+// src/adapters/opencode/settings.ts
+async function setupSettings(ctx, start) {
+  insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
+  if (!ctx.rpc || !ctx.storage)
+    return start(ctx);
+  const explicit = Object.keys(ctx.options).length > 0;
+  const identity = hash(JSON.stringify([homedir(), ctx.location.project.id, ctx.location.project.id === "global" ? ctx.location.project.canonical : undefined]));
+  const defaults = {
+    enabled: false,
+    database: join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "optchat", identity, "memory.sqlite"),
+    scopeId: `local:${identity}`,
+    memoryBytes: 16000,
+    safetyTokens: 2048,
+    waitMs: 30000
+  };
+  let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } : { ...defaults, ...await ctx.storage.get("settings.v1") };
+  let cleanup, registrations = [];
+  let tail = Promise.resolve(), closing = false, changing = false, activeRequests = 0, revision = 0;
+  const serial = (work) => {
+    const next = tail.then(work);
+    tail = next.then(() => {}, () => {});
+    return next;
+  };
+  const stop = async () => {
+    revision++;
+    for (const registration of registrations.splice(0).reverse())
+      await registration.dispose();
+    await cleanup?.();
+    cleanup = undefined;
+  };
+  const activate = async (value) => {
+    if (!value.enabled)
+      return;
+    const currentRevision = ++revision;
+    const guard = (callback) => async (...args) => {
+      insist(!changing && !closing && currentRevision === revision, "SETTINGS_BUSY", "Wait until OptChat settings finish changing");
+      activeRequests++;
+      try {
+        return await callback(...args);
+      } finally {
+        activeRequests--;
+      }
+    };
+    const capture = async (promise) => {
+      const registration = await promise;
+      if (registration)
+        registrations.push(registration);
+      return registration;
+    };
+    const session = new Proxy(ctx.session, { get(target, name) {
+      if (name === "hook")
+        return (name, callback, ...rest) => capture(target.hook(name, guard(callback), ...rest));
+      return Reflect.get(target, name);
+    } });
+    const tool = new Proxy(ctx.tool, { get(target, name) {
+      if (name === "transform")
+        return (callback) => capture(target.transform((editor) => callback(new Proxy(editor, { get(target, name) {
+          if (name === "add")
+            return (definition) => target.add({ ...definition, execute: guard(definition.execute) });
+          return Reflect.get(target, name);
+        } }))));
+      return Reflect.get(target, name);
+    } });
+    const context = new Proxy(ctx, { get(target, name) {
+      if (name === "options")
+        return value;
+      if (name === "session")
+        return session;
+      if (name === "tool")
+        return tool;
+      return Reflect.get(target, name);
+    } });
+    try {
+      cleanup = await start(context);
+    } catch (error) {
+      await stop();
+      throw error;
+    }
+  };
+  const validate = async (value) => {
+    insist(isAbsolute(value.database) && value.scopeId.trim(), "CONFIG", "Use an absolute database path and a nonempty scope");
+    insist(Number.isSafeInteger(value.memoryBytes) && value.memoryBytes >= 0 && Number.isSafeInteger(value.safetyTokens) && value.safetyTokens >= 256, "CONFIG", "Use valid memory and safety budgets");
+    insist(Number.isSafeInteger(value.waitMs) && value.waitMs >= 1 && value.waitMs <= 300000, "CONFIG", "Use a wait between 1 and 300000 milliseconds");
+    if (value.enabled) {
+      insist(value.compactorModel || value.fakeSummarizer, "CONFIG", "Select a compactor model");
+      if (value.compactorModel) {
+        const models = (await ctx.model.list({})).data;
+        insist(models.some((m) => m.enabled && m.providerID === value.compactorModel.providerID && m.id === value.compactorModel.id && m.limit.context && m.limit.output), "CONFIG", "Select an enabled model with known limits");
+      }
+    }
+  };
+  await activate(settings);
+  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
+  let rpc;
+  try {
+    rpc = await ctx.rpc.register(SettingsRpc, {
+      read: async () => publicSettings(),
+      write: async (input) => serial(async () => {
+        insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
+        insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");
+        const next = input;
+        await validate(next);
+        insist(next.database === settings.database && next.scopeId === settings.scopeId, "SCOPE_LOCKED", "The project database and scope cannot change in this dialog");
+        insist(!activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
+        changing = true;
+        try {
+          if (cleanup) {
+            const store = new Store(settings.database);
+            try {
+              insist(store.all("turns").every((t) => t.outcome), "SETTINGS_BUSY", "Finish or interrupt active turns before changing settings");
+            } finally {
+              store.close();
+            }
+          }
+          const previous = settings;
+          await stop();
+          try {
+            await activate(next);
+            await ctx.storage.set("settings.v1", JSON.parse(JSON.stringify(next)));
+            settings = next;
+          } catch (error) {
+            await stop();
+            await activate(previous);
+            throw error;
+          }
+          return publicSettings();
+        } finally {
+          changing = false;
+        }
+      })
+    });
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+  return async () => {
+    closing = true;
+    await rpc.dispose();
+    await tail;
+    await stop();
+  };
+}
+
 // src/adapters/opencode/plugin.ts
-var plugin_default = Plugin.define({ id: "optchat.memory", async setup(ctx) {
+var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
   const config = ctx.options;
-  insist(config.database && isAbsolute(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
+  insist(config.database && isAbsolute2(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
@@ -1176,8 +1344,9 @@ var plugin_default = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     store.close();
   };
 } });
+var plugin_default = Plugin.define({ id: "optchat.memory", setup: (ctx) => setupSettings(ctx, memory.setup) });
 export {
   plugin_default as default
 };
 
-//# debugId=6045200E0BC4530F64756E2164756E21
+//# debugId=1708DF63D8DAC5E764756E2164756E21

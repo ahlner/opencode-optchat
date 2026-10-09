@@ -5,11 +5,12 @@ import { dirname, isAbsolute } from "node:path";
 import { Engine, Store, Retrieval, ModelSummarizer, FakeSummarizer, assembleContext, MemoryError, insist, key, hash, type Session, type Turn } from "../../index.ts";
 import { extract, fingerprint, contentFingerprint, liveSuffix, retainedMessage, type RawMessage } from "./transcript.ts";
 import { memoryPolicy } from "./policy.ts";
+import { setupSettings } from "./settings.ts";
 
 interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
-export default Plugin.define({ id: "optchat.memory", async setup(ctx) {
+const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
   const config = ctx.options as unknown as Config;
   insist(config.database && isAbsolute(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
@@ -277,3 +278,4 @@ export default Plugin.define({ id: "optchat.memory", async setup(ctx) {
   })().catch(error => { if (!stopped) { for (const s of store.all<Session>("sessions")) disable(s.id, `Event stream failed: ${String(error)}`); } });
   return async () => { stopped = true; controller.abort(); await events; await tail; store.close(); };
 } });
+export default Plugin.define({ id: "optchat.memory", setup: ctx => setupSettings(ctx, memory.setup) });

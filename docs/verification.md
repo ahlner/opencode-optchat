@@ -181,6 +181,32 @@ Pinned Git and local archive diagnostics:
 /var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-Evw50d
 ```
 
+## Terminal settings
+
+The settings implementation passed TypeScript checks and 54 tests with 11,625 assertions.
+The tests check inactive installation, model validation, active-turn rejection, persistence, rollback, and runtime disposal.
+Dialog tests check Location routing, cost confirmation, and cancellation without saving.
+
+The packed plugin passed all 23 lifecycle integration groups and 10 managed-settings groups.
+Settings checks use a private host and a loopback model.
+They cover activation, context injection, retrieval, crash recovery, persistent settings, disable without deletion, and budget changes.
+
+A private macOS pseudo-terminal opened the native palette and settings dialog without submitting a model prompt.
+Its fixture uses the same conditional TUI export shape as the package.
+The local fixture is not evidence of a public Git TUI installation.
+
+Local directory resolution differs from Git resolution in the pinned host.
+An initial directory-only fixture did not load the plugin.
+The local terminal fixture therefore uses an explicit wrapper package.
+
+Packed lifecycle, managed settings, and terminal diagnostics:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-XVDiJ9
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-s6VB6C
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-3q90Sh
+```
+
 ## Limits of the evidence
 
 The private package and lifecycle integration still uses a controlled local model.

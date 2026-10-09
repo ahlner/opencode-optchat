@@ -15,6 +15,8 @@ try {
   await run(["tar", "-xzf", join(root, archives[0]!), "-C", root]);
   const packageDir = join(root, "package"), metadata = await Bun.file(join(packageDir, "package.json")).json();
   assert.equal(metadata.exports["./plugin"].default, "./dist/adapters/opencode/plugin.js");
+  assert.equal(metadata.exports["./tui"].default, "./dist/adapters/opencode/tui.js");
+  assert(await Bun.file(join(packageDir, metadata.exports["./tui"].default)).exists());
   assert.equal(metadata.license, "MIT");
   assert.equal(metadata.author, "Philipp Ahlner");
   const license = await Bun.file(join(packageDir, "LICENSE")).text();
@@ -44,5 +46,6 @@ if (snapshot.sessionId !== "package" || !plugin.setup || plugin !== explicitPlug
   await run(["bun", join(root, "consumer.ts")], root);
   await run([join(repository, "node_modules/.bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--allowImportingTsExtensions", "--module", "Preserve", "--moduleResolution", "bundler", "--target", "ESNext", "--types", "bun", join(root, "consumer.ts")], root);
   await run(["bun", "run", "scripts/integration.ts"], repository, { OPTCHAT_PLUGIN_ENTRY: join(packageDir, metadata.exports["./plugin"].default) });
+  await run(["bun", "run", "scripts/integration.ts"], repository, { OPTCHAT_PLUGIN_ENTRY: join(packageDir, metadata.exports["./plugin"].default), OPTCHAT_TUI_SETTINGS: "1" });
   console.log("Packed package: public runtime exports, TypeScript consumer, and private OpenCode integration passed.");
 } finally { await rm(root, { recursive: true, force: true }); }

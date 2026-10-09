@@ -14,7 +14,8 @@
   "exports": {
     ".": { "types": "./dist/types/adapters/opencode/plugin.d.ts", "default": "./dist/adapters/opencode/plugin.js" },
     "./core": { "types": "./dist/types/index.d.ts", "default": "./dist/index.js" },
-    "./plugin": { "types": "./dist/types/adapters/opencode/plugin.d.ts", "default": "./dist/adapters/opencode/plugin.js" }
+    "./plugin": { "types": "./dist/types/adapters/opencode/plugin.d.ts", "default": "./dist/adapters/opencode/plugin.js" },
+    "./tui": { "types": "./dist/types/adapters/opencode/tui.d.ts", "default": "./dist/adapters/opencode/tui.js" }
   },
   "files": ["dist", "README.md", "docs", "AGENTS.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "engines": {
@@ -24,12 +25,14 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run test:docs && bun run typecheck && bun test",
-    "compile": "bun build src/index.ts src/adapters/opencode/plugin.ts --target bun --outdir dist --root src --external @opencode/plugin --sourcemap=external && tsc -p tsconfig.build.json",
+    "compile": "bun build src/index.ts src/adapters/opencode/plugin.ts src/adapters/opencode/tui.ts --target bun --outdir dist --root src --external @opencode/plugin --sourcemap=external && tsc -p tsconfig.build.json",
     "check:dist": "bun run compile && git diff --exit-code -- dist",
     "pack": "bun run compile && bun pm pack",
     "demo": "bun run examples/two-session-demo.ts",
     "spike": "bun run scripts/spike.ts",
     "test:integration": "bun run compile && bun run scripts/integration.ts",
+    "test:settings": "bun run compile && OPTCHAT_TUI_SETTINGS=1 bun run scripts/integration.ts",
+    "test:tui": "bun run compile && bun run scripts/tui-test.ts",
     "test:package": "bun run compile && bun run scripts/package-test.ts",
     "test:git": "bun run scripts/git-test.ts",
     "test:coverage": "bun test --coverage",

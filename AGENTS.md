@@ -63,6 +63,15 @@ Run `bun run check:dist` to detect generated files that differ from their commit
 Do not add a `build` or install lifecycle script. Git package preparation must not require a build.
 
 The default package export is the plugin. The standalone engine uses the `./core` export.
+
+The `./tui` export provides the terminal settings command.
+Installations without explicit options start inactive. Settings persist through the location-scoped server storage API.
+Keep automatic database paths and scopes on the server. Never create them from a remote client's filesystem paths.
+
+Reject settings changes during active turns. Dispose old hooks and tools before installing their replacements.
+Disabling pauses ingestion. It does not delete stored memory or revoke existing publications.
+Run `bun run test:settings` and `bun run test:tui` after settings changes.
+
 Run `bun run test:git` to check the public Git package in a fresh private host.
 Set `OPTCHAT_GIT_PACKAGE` to select a different Git revision.
 

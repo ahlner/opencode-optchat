@@ -14,6 +14,37 @@ You do not need an npm account, a local clone, a build command, or a wrapper pac
 The repository includes the compiled plugin and its type declarations.
 Dependencies can still require package-registry downloads. This project does not publish to npmjs.com.
 
+### CLI installation and TUI settings
+
+```sh
+opencode plugin add github:ahlner/opencode-optchat#main
+```
+
+1. Open your project in OpenCode 2.0.26.
+2. Open the command palette with `Ctrl+P`.
+3. Select **OptChat settings**.
+4. Select a compactor model from your enabled models.
+5. Enable memory.
+6. Select **Save settings** and confirm the data processing and possible model costs.
+
+You can also use `/optchat-settings`.
+The plugin starts inactive. Installation alone does not retain conversations or call a model.
+
+The server creates a private database path and scope for the current user and stable project.
+The dialog also controls the memory budget, safety reserve, and admission wait.
+Settings persist on the server and survive restarts. They do not contain provider credentials.
+
+Finish or interrupt active turns before changing settings.
+Changes apply without a service restart.
+Disabling pauses the adapter. It does not delete originals or revoke previously published memory.
+Use the confirmed administrative retirement command when you need deletion.
+Database and scope identifiers remain fixed in this dialog to prevent accidental trust-boundary changes.
+
+### Explicit configuration
+
+Use explicit options when you need a custom database path or trust scope.
+Explicit options take precedence. The TUI does not overwrite them.
+
 1. Use OpenCode 2.0.26.
 2. Add the following entry to your project `opencode.jsonc`.
 3. Preserve existing configuration entries.
@@ -46,10 +77,7 @@ Do not send prompts while the plugin installation remains pending.
 Use a full commit hash instead of `main` when you need a fixed revision.
 An unpinned branch can change. Check updates before you install them.
 
-The CLI also supports `opencode plugin add github:ahlner/opencode-optchat#main`.
-That command adds a global entry without the required memory options.
-Edit that entry to include the options above before you use the plugin.
-Do not add a second project entry for the same plugin.
+Do not add a second project entry when the CLI already installed the plugin globally.
 
 See [configuration](#configuration) for model, scope, and permission requirements.
 
@@ -90,10 +118,14 @@ bun run test:coverage
 bun run test:integration
 bun run test:package
 bun run test:git
+bun run test:settings
+bun run test:tui
 bun run demo
 ```
 
 The integration test starts a private OpenCode service and a local model fixture.
+The settings test uses the same private service without explicit plugin options.
+The TUI test uses a private macOS pseudo-terminal and does not submit model prompts.
 It does not use user configuration, credentials, or an existing database.
 Its temporary files contain test requests and private service diagnostics.
 Do not publish these files without checking their contents.
@@ -115,8 +147,9 @@ Git installations do not execute build scripts.
 Run `bun run check:dist` to check that committed build files match the source.
 `bun run pack` creates a local archive without registry publication.
 
-To test a local checkout, replace the Git package specification with the absolute repository directory.
-Use the same configuration options. You do not need a wrapper package.
+Use `test:integration` to check a local server build.
+Use `test:tui` to check the local terminal build through an isolated fixture package.
+Local directory loading can differ from Git package loading in the pinned host.
 The default package export is the OpenCode plugin.
 Import the standalone memory engine from `opencode-optchat/core`.
 The `opencode-optchat/plugin` entry remains available.

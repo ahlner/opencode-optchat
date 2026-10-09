@@ -43,7 +43,7 @@ const inventory = JSON.stringify({
 const output = "docs/dependency-licenses.json";
 if (Bun.argv.includes("--write")) await Bun.write(output, inventory);
 else assert.equal(await Bun.file(output).text(), inventory, "Dependency inventory changed. Review changes, then run audit:licenses --write.");
-for (const file of ["dist/index.js.map", "dist/adapters/opencode/plugin.js.map"]) {
+for (const file of ["dist/index.js.map", "dist/adapters/opencode/plugin.js.map", "dist/adapters/opencode/tui.js.map"]) {
   assert(await Bun.file(file).exists(), "Run bun run compile before auditing bundle contents");
   const map = await Bun.file(file).json();
   assert(map.sources.length > 0);

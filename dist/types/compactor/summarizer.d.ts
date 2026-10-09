@@ -16,7 +16,8 @@ export declare class ModelSummarizer implements Summarizer {
     readonly model: string;
     readonly inputBytes: number;
     readonly retries: number;
-    constructor(generate: (prompt: string, signal?: AbortSignal) => Promise<string>, model: string, inputBytes?: number, retries?: number);
+    readonly lossless: boolean;
+    constructor(generate: (prompt: string, signal?: AbortSignal) => Promise<string>, model: string, inputBytes?: number, retries?: number, lossless?: boolean);
     summarize(input: string, signal?: AbortSignal): Promise<Summary>;
 }
 export declare function chunks(text: string, limit: number): string[];

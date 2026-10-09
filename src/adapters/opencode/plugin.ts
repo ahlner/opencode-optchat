@@ -53,7 +53,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       diagnostics.emit("compactor.result", { jobId: activeJob, outputBytes: Buffer.byteLength(result.text, "utf8") });
       return result.text;
     }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
-  }, key(config.compactorModel));
+  }, key(config.compactorModel), 12000, 3, true);
   const engine = new Engine(store, compactor, { maxRunningJobs: 1, jobEvent: (event, details) => {
     if (event === "job.claim") activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });

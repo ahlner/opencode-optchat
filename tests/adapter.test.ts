@@ -67,7 +67,7 @@ test("cold history uses native messages immediately, remains native through cont
   let finishLate!: (value: { text: string }) => void;
   const late = new Promise<{ text: string }>(resolve => { finishLate = resolve; });
   const history = Array.from({ length: 24 }, (_, i) => [
-    { id: `past-${i}`, type: "user", time: { created: i * 2 + 1 }, text: `HISTORICAL_EVIDENCE_${i}` },
+    { id: `past-${i}`, type: "user", time: { created: i * 2 + 1 }, text: `HISTORICAL_EVIDENCE_${i}`.repeat(30) },
     { id: `idle-${i}`, type: "idle", time: { created: i * 2 + 2 }, outcome: "succeeded" },
   ]).flat();
   let cleanup: (() => Promise<void>) | undefined;
@@ -140,7 +140,7 @@ test("adapter retries a transient rate limit and publishes without losing origin
   try {
     const database = join(root, "memory.sqlite");
     const cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root }, options: { database, scopeId: "retry-scope", compactorModel: { id: "fixture", providerID: "fixture" } },
-      session: { hook: async () => {}, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => [{ id: "original", type: "user", time: { created: 1 }, text: "RETAINED_RETRY_EVIDENCE" }, { id: "idle", type: "idle", time: { created: 2 }, outcome: "succeeded" }] },
+      session: { hook: async () => {}, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => [{ id: "original", type: "user", time: { created: 1 }, text: "RETAINED_RETRY_EVIDENCE".repeat(40) }, { id: "idle", type: "idle", time: { created: 2 }, outcome: "succeeded" }] },
       agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) }, generate: { text: async () => { if (++calls === 1) throw new Error("Generate.UnavailableError: Rate limit exceeded. Retry after 1 seconds."); return { text: "Retained retry evidence." }; } }, tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () { yield { type: "session.execution.succeeded", location: { directory: root }, data: { sessionID: "retry-session" } }; } },
     } as any);
     await cleanup?.();
@@ -159,7 +159,7 @@ test("real-compactor rejection preserves originals and failed jobs instead of re
   try {
     const database = join(root, "memory.sqlite");
     const cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root }, options: { database, scopeId: "failure-scope", compactorModel: { id: "fixture", providerID: "fixture" } },
-      session: { hook: async () => {}, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => [{ id: "original", type: "user", time: { created: 1 }, text: "RETRYABLE_ORIGINAL" }, { id: "idle", type: "idle", time: { created: 2 }, outcome: "succeeded" }] },
+      session: { hook: async () => {}, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => [{ id: "original", type: "user", time: { created: 1 }, text: "RETRYABLE_ORIGINAL".repeat(40) }, { id: "idle", type: "idle", time: { created: 2 }, outcome: "succeeded" }] },
       agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) }, generate: { text: async () => ({ text: "x".repeat(513) }) }, tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () { yield { type: "session.execution.succeeded", location: { directory: root }, data: { sessionID: "original-session" } }; } },
     } as any);
     await cleanup?.(); const store = new Store(database);

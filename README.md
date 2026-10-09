@@ -204,6 +204,17 @@ See [configuration](#configuration) for model, scope, and permission requirement
 
 ## Features
 
+### Lower preparation costs
+
+The adapter avoids model requests when the complete summary input already fits within 512 UTF-8 bytes.
+It preserves that input exactly and records a local, lossless node.
+This applies to short originals, combined summaries, and small publications.
+Larger inputs still require the selected compactor model.
+
+Existing summaries remain immutable. The optimization applies to unfinished and new work.
+Savings depend on record sizes and the summaries produced by the model.
+It does not impose a total archive cost limit or combine multiple oversized records in one model request.
+
 - SQLite transactions, write-ahead logging (WAL), durable jobs, leases, and fencing.
 - Complete structured original records, stable event keys, and a core staging interface for streaming data.
 - Binary session trees and publication trees. Each summary contains at most 512 UTF-8 bytes.

@@ -67,6 +67,16 @@ It stores intermediate summaries durably.
 It reduces those summaries until the final input fits the limit.
 The complete originals remain available independently.
 
+The adapter copies complete summary inputs locally when they already fit within 512 UTF-8 bytes.
+This includes short originals, adjacent child summaries, and small publication inputs.
+These nodes use `lossless-local` and `lossless-1` as their model and revision metadata.
+They retain the exact input without a model request or text clipping.
+
+Larger inputs still use the configured compactor model.
+Existing immutable nodes remain unchanged. No automatic rebuild is required.
+The standalone `ModelSummarizer` enables this behavior through its fifth constructor argument.
+It defaults to the previous model-only behavior for existing consumers.
+
 The worker renews its lease regularly.
 Regular renewal requires an unexpired lease.
 Commit recovery can refresh an expired lease only through the unchanged fence and running status.

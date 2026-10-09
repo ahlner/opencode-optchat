@@ -1,5 +1,31 @@
 # Verification
 
+## Lossless preparation optimization
+
+The adapter stores complete inputs locally when they fit within the existing 512-byte summary limit.
+It does not clip text, change originals, or bypass publication and lease transactions.
+Existing immutable summaries remain unchanged.
+
+A deterministic comparison uses the same 16 records and the same model response.
+Model-only preparation requires 32 calls. Lossless preparation requires two calls and creates 30 local nodes.
+Both paths retain every original and publish the recorded failed outcome once.
+Boundary tests cover 512 UTF-8 bytes, oversized Unicode input, and cancellation before local processing.
+
+The optimized private host lifecycle test passed 23 groups with 124 loopback requests.
+Its diagnostics are in `optchat-integration-8NRzu2` under the reported temporary directory.
+The packed managed settings test passed 25 groups with 73 loopback requests in `optchat-integration-l47vhG`.
+These request counts include primary requests, not only compactor calls.
+They do not establish a fixed cost reduction for arbitrary archives or real providers.
+
+The first managed test expected a cancelled leaf job specifically.
+Local processing completed that leaf before the held model request.
+The test now injects failure into the actual pending dependency, regardless of its node type.
+The cancellation, retry, retained-data, and native-input checks remain unchanged.
+
+The deterministic suite passed 90 tests with 11,903 assertions.
+TypeScript, documentation, packed exports, the consumer type check, and the dependency license audit passed.
+No real-provider evaluation ran for this optimization. Real archive savings remain unmeasured.
+
 ## Native input during incomplete preparation
 
 The operator reported that enabled memory prevented ordinary input from reaching the model.

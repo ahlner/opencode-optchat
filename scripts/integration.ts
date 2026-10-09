@@ -190,8 +190,8 @@ try {
       const fixtureStore = new Store(dbPath);
       let failedJobId: string;
       try {
-        const row = fixtureStore.db.query("SELECT id FROM jobs WHERE status='pending' AND json_extract(input,'$.type')='leaf' LIMIT 1").get() as { id: string } | null;
-        assert(row, "A cancelled leaf remains available for recovery"); failedJobId = row.id;
+        const row = fixtureStore.db.query("SELECT id FROM jobs WHERE status='pending' LIMIT 1").get() as { id: string } | null;
+        assert(row, "A cancelled dependency remains available for recovery"); failedJobId = row.id;
         assert.equal(fixtureStore.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND status='pending'").run("Compactor did not produce a nonempty summary within 512 UTF-8 bytes PRIVATE_BROKEN_JOB_PAYLOAD", row.id).changes, 1);
       } finally { fixtureStore.close(); }
       const failedStart = performance.now(), beforeFailed = requests.length;

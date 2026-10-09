@@ -65,14 +65,19 @@ class ModelSummarizer {
   model;
   inputBytes;
   retries;
-  constructor(generate, model, inputBytes = 12000, retries = 3) {
+  lossless;
+  constructor(generate, model, inputBytes = 12000, retries = 3, lossless = false) {
     this.generate = generate;
     this.model = model;
     this.inputBytes = inputBytes;
     this.retries = retries;
+    this.lossless = lossless;
     insist(Number.isSafeInteger(inputBytes) && inputBytes >= 2048 && retries > 0 && retries <= 10, "CONFIG", "Invalid compactor bounds");
   }
   async summarize(input, signal) {
+    signal?.throwIfAborted();
+    if (this.lossless && input.length > 0 && bytes(input) <= 512)
+      return { text: input, model: "lossless-local", promptVersion: "lossless-1", fallback: false };
     insist(bytes(input) <= this.inputBytes, "SUMMARY_INPUT_TOO_LARGE", "Chunk the full input before summarization");
     let measured = "";
     for (let attempt = 0;attempt < this.retries; attempt++) {
@@ -1454,7 +1459,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       diagnostics.emit("compactor.result", { jobId: activeJob, outputBytes: Buffer.byteLength(result.text, "utf8") });
       return result.text;
     }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
-  }, key(config.compactorModel));
+  }, key(config.compactorModel), 12000, 3, true);
   const engine = new Engine(store, compactor, { maxRunningJobs: 1, jobEvent: (event, details) => {
     if (event === "job.claim")
       activeJob = details.jobId;
@@ -2069,4 +2074,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=886CC388AA7233B064756E2164756E21
+//# debugId=6DD1C5DA90105D5C64756E2164756E21

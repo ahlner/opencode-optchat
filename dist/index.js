@@ -60,14 +60,19 @@ class ModelSummarizer {
   model;
   inputBytes;
   retries;
-  constructor(generate, model, inputBytes = 12000, retries = 3) {
+  lossless;
+  constructor(generate, model, inputBytes = 12000, retries = 3, lossless = false) {
     this.generate = generate;
     this.model = model;
     this.inputBytes = inputBytes;
     this.retries = retries;
+    this.lossless = lossless;
     insist(Number.isSafeInteger(inputBytes) && inputBytes >= 2048 && retries > 0 && retries <= 10, "CONFIG", "Invalid compactor bounds");
   }
   async summarize(input, signal) {
+    signal?.throwIfAborted();
+    if (this.lossless && input.length > 0 && bytes(input) <= 512)
+      return { text: input, model: "lossless-local", promptVersion: "lossless-1", fallback: false };
     insist(bytes(input) <= this.inputBytes, "SUMMARY_INPUT_TOO_LARGE", "Chunk the full input before summarization");
     let measured = "";
     for (let attempt = 0;attempt < this.retries; attempt++) {
@@ -875,4 +880,4 @@ export {
   turnKey
 };
 
-//# debugId=1648083BB12EE8CE64756E2164756E21
+//# debugId=CBA143B65911CEC764756E2164756E21

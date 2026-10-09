@@ -35,6 +35,7 @@ The tests do not establish support for other operating systems or providers.
 | Oversized active turn | Explicit stop before the primary host model call. No cut tool pairs |
 | Long history | Core fixture above ten context windows, bounded request, and exact retrieval |
 | Real summary quality | A real two-session host case passed. No repeated baseline benchmark |
+| Git package installation | Public GitHub package, fresh isolated cache, compiled root export, and full private host lifecycle |
 
 Support applies only to the checked V2 boundaries.
 The adapter rejects a foreign compaction marker without an original checkpoint.

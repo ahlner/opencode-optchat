@@ -97,7 +97,12 @@ const publications = () => (db!.query("SELECT value FROM entities WHERE bucket='
 try {
   await ready();
   const create = () => api("POST", "/api/session", { location: { directory: join(root, "project") }, model: { providerID: "fixture", id: "fixture" }, permissions: [{ action: "*", resource: "*", effect: "allow" }] });
-  const a = await create();
+   const a = await create();
+   if (gitPackage) {
+     // Creating a session does not start its Location services. No model call is needed.
+     await api("GET", `/api/agent?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`);
+     await until(async () => await Bun.file(dbPath).exists(), "Git plugin installation and setup", 120000);
+   }
   await api("POST", `/api/session/${a.id}/prompt`, { text: "A_DECISION: use Bun; run fixture_echo." });
   await until(async () => (await api("GET", `/api/session/${a.id}`)).outcome === "succeeded", "A terminal outcome");
   await until(async () => await Bun.file(dbPath).exists(), "memory database"); db = new Database(dbPath, { readonly: true });
@@ -252,7 +257,15 @@ try {
   await until(() => (db!.query("SELECT value FROM entities WHERE bucket='checkpoints'").all() as { value: string }[]).every(r => !r.value.includes(c.id)), "checkpoint deletion purges archived originals");
   await api("POST", `/api/session/${compactFork.id}/prompt`, { text: "COMPACT_FORK_AFTER_PARENT_DELETE" });
   await until(async () => (await api("GET", `/api/session/${compactFork.id}`)).outcome === "succeeded", "fork checkpoint survives parent deletion");
-  console.log(JSON.stringify({ root, pluginPath, checks: ["actual context injection", "foreign transcript isolation", "tool protocol pairs", "search/source/zoom", "terminal publication", "service restart", "deduplication", "interrupted outcome", "failed outcome", "native compaction", "repeated checkpoint restart", "fork inheritance without republishing", "compacted fork inheritance", "independent fork retention", "private child execution", "native permission revocation", "active permission revocation", "native agent memory rule", "partial rewind", "stable-project worktree move", "fork original worktree provenance", "oversized active turn stop", "deletion including checkpoints"], priorCount, modelRequests: requests.length }, null, 2));
+  let installedEntrypoint: string | undefined;
+  if (gitPackage) {
+    const log = await Bun.file(join(root, "data/opencode/log/opencode.log")).text();
+    installedEntrypoint = log.split("\n").find(line => line.includes(`id=${gitPackage} `) && line.includes("entrypoint="))?.match(/entrypoint=(\S+)/)?.[1];
+    assert(installedEntrypoint, "The host must load the Git package, not the local source");
+    assert(installedEntrypoint.includes("/cache/opencode/"), "The host must use its isolated package cache");
+    assert(installedEntrypoint.endsWith("/dist/adapters/opencode/plugin.js"), "The Git root export must resolve to the compiled plugin");
+  }
+  console.log(JSON.stringify({ root, pluginPath: gitPackage ? undefined : pluginPath, gitPackage, installedEntrypoint, checks: ["actual context injection", "foreign transcript isolation", "tool protocol pairs", "search/source/zoom", "terminal publication", "service restart", "deduplication", "interrupted outcome", "failed outcome", "native compaction", "repeated checkpoint restart", "fork inheritance without republishing", "compacted fork inheritance", "independent fork retention", "private child execution", "native permission revocation", "active permission revocation", "native agent memory rule", "partial rewind", "stable-project worktree move", "fork original worktree provenance", "oversized active turn stop", "deletion including checkpoints"], priorCount, modelRequests: requests.length }, null, 2));
 } catch (error) {
   console.error(`Integration artifacts: ${root}`); throw error;
 } finally {

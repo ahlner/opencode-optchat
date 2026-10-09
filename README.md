@@ -19,6 +19,7 @@ Dependencies can still require package-registry downloads. This project does not
 3. Preserve existing configuration entries.
 4. Replace the database path, scope identifier, and model identifiers.
 5. Open the project in OpenCode.
+6. Wait for the memory tools before you send the first prompt.
 
 ```jsonc
 {
@@ -40,6 +41,8 @@ Dependencies can still require package-registry downloads. This project does not
 ```
 
 OpenCode installs missing Git packages in the background.
+Check that `optchat_search`, `optchat_source`, and `optchat_zoom` are available.
+Do not send prompts while the plugin installation remains pending.
 Use a full commit hash instead of `main` when you need a fixed revision.
 An unpinned branch can change. Check updates before you install them.
 

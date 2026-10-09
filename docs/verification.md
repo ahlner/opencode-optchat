@@ -137,10 +137,49 @@ The standalone engine uses `opencode-optchat/core`.
 Git retains the compiled JavaScript and declarations. Installation does not require a build hook.
 `bun run check:dist` rebuilt those files without changes.
 
-`bun run check` passed 48 tests with 11,588 assertions and the TypeScript check.
+`bun run check` passed 48 tests with 11,590 assertions and the TypeScript check.
 The local archive passed its runtime exports, declaration consumer, and 23 private host integration groups.
 The license audit found no bundled third-party source.
 These checks do not establish support for an untested host version.
+
+The first fresh-cache Git attempt failed during dependency preparation.
+The `build` script triggered that preparation in the pinned host.
+Renaming the development command to `compile` removed the trigger.
+The next installation of `github:ahlner/opencode-optchat#main` passed all 23 integration groups.
+The host loaded the compiled root entry from its isolated Git package cache.
+The test did not use a local adapter wrapper or user configuration.
+
+The distribution test imports compiled modules separately from source modules.
+The unit coverage report now includes those compiled copies.
+It reports 82.56% line coverage and 84.45% function coverage across loaded modules.
+The core source and storage modules retain 100% line coverage.
+Private host integration runs separately from the unit coverage process.
+
+Branch-test diagnostics:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-2KxgfW
+```
+
+The full-commit installation also passed all 23 integration groups with a fresh cache.
+The tested package specification was:
+
+```text
+github:ahlner/opencode-optchat#8726f4456dc8e7218f92863c1a701c4c5cc8aea1
+```
+
+Two preliminary pinned attempts failed in the harness before plugin setup.
+The harness needed to start Location services and use the endpoint's nested query format.
+The corrected harness starts those services without a model call before the first prompt.
+It then checks the actual Git cache entry in the private host log.
+The local archive also passed all 23 groups after these distribution changes.
+
+Pinned Git and local archive diagnostics:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-rYYBf9
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-Evw50d
+```
 
 ## Limits of the evidence
 

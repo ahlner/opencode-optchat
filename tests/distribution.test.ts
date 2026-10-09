@@ -12,7 +12,7 @@ test("Git package exports a compiled plugin and a separate core without install 
     expect(await Bun.file(entry.default).exists()).toBe(true);
     expect(await Bun.file(entry.types).exists()).toBe(true);
   }
-  for (const hook of ["prepare", "preinstall", "install", "postinstall"]) expect(metadata.scripts[hook]).toBeUndefined();
+  for (const hook of ["build", "prepare", "prepack", "preinstall", "install", "postinstall"]) expect(metadata.scripts[hook]).toBeUndefined();
   expect(plugin.setup).toBeFunction();
   const store = new Store();
   try {

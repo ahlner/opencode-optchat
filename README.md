@@ -106,9 +106,10 @@ See [verification](docs/verification.md) for results and limits.
 
 ### Local development and core imports
 
-Run `bun run build` after source changes.
+Run `bun run compile` after source changes.
 Commit the generated `dist` files with their source changes.
 Git installations do not execute build scripts.
+Run `bun run check:dist` to check that committed build files match the source.
 `bun run pack` creates a local archive without registry publication.
 
 To test a local checkout, replace the Git package specification with the absolute repository directory.
@@ -269,4 +270,4 @@ This license covers original project code and documentation.
 It does not cover external sources, dependencies, or stored conversations.
 See the [source review](docs/license-review.md) and [third-party notices](THIRD_PARTY_NOTICES.md) for details.
 
-After `bun run build`, run `bun run audit:licenses` to check the local inventory and bundle sources.
+After `bun run compile`, run `bun run audit:licenses` to check the local inventory and bundle sources.

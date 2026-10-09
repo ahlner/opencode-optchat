@@ -130,6 +130,18 @@ The test questions do not contain the random target values or error codes.
 The deployment failure is controlled fixture evidence, not a real deployment.
 The test sessions remain available for diagnosis.
 
+## Git distribution preparation
+
+The package now exports the OpenCode plugin by default.
+The standalone engine uses `opencode-optchat/core`.
+Git retains the compiled JavaScript and declarations. Installation does not require a build hook.
+`bun run check:dist` rebuilt those files without changes.
+
+`bun run check` passed 48 tests with 11,588 assertions and the TypeScript check.
+The local archive passed its runtime exports, declaration consumer, and 23 private host integration groups.
+The license audit found no bundled third-party source.
+These checks do not establish support for an untested host version.
+
 ## Limits of the evidence
 
 The private package and lifecycle integration still uses a controlled local model.

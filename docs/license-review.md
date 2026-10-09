@@ -106,7 +106,7 @@ This work does not publish to a registry or activate the adapter for the user.
 
 ```sh
 bun install --frozen-lockfile
-bun run build
+bun run compile
 bun run audit:licenses
 bun run check
 bun run test:package

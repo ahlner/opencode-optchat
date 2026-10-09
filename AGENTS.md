@@ -56,9 +56,12 @@ Do not publish those files without checking their contents.
 
 `test:package` checks a local packed archive, public exports, TypeScript types, and the same private host integration.
 The integration deliberately kills only its own private service to verify crash recovery.
-`build` produces JavaScript and declarations in `dist`. `pack` creates a local archive without registry publication.
+`compile` produces JavaScript and declarations in `dist`. `pack` creates a local archive without registry publication.
 
 Commit generated `dist` files with their source changes. Git installations do not execute build scripts.
+Run `bun run check:dist` to detect generated files that differ from their committed versions.
+Do not add a `build` or install lifecycle script. Git package preparation must not require a build.
+
 The default package export is the plugin. The standalone engine uses the `./core` export.
 Run `bun run test:git` to check the public Git package in a fresh private host.
 Set `OPTCHAT_GIT_PACKAGE` to select a different Git revision.

@@ -20,6 +20,15 @@ Before each commit, a worker atomically refreshes its lease if its fence and run
 This permits recovery after suspension without permitting a superseded worker to commit.
 Lost ownership discards the result instead of marking another worker's job failed.
 
+Schema version 2 adds a process identifier and a unique store token to each claimed job.
+Before claiming work, the store checks whether a recorded process no longer exists.
+It returns confirmed dead-process claims to the queue and increments their fences.
+Closing a store releases only that store's claims.
+
+Live processes and unknown legacy owners retain their leases until normal expiry.
+Process identifier reuse can delay recovery. It never permits an unverified takeover.
+Process ownership checks require all workers to use the same host. Shared databases across hosts are not supported.
+
 SQLite FTS5 indexes originals and summaries.
 Database triggers update summary indexes within the transaction.
 

@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import plugin from "../src/adapters/opencode/plugin.ts";
 import { Store, Engine } from "../src/index.ts";
-import { extract } from "../src/adapters/opencode/transcript.ts";
+import { extract, fingerprint } from "../src/adapters/opencode/transcript.ts";
+import { automaticScope } from "../src/adapters/opencode/settings-scope.ts";
 
 test("cancelled chunk work preserves durable progress and cannot release another worker's fence", async () => {
   const store = new Store(), controller = new AbortController();
@@ -239,5 +240,117 @@ test("adapter cannot consume jobs from a database assigned to another trust scop
     const inspect = new Store(database);
     try { expect(inspect.get("sessions", "original")).toMatchObject({ scopeId: "trusted:scope" }); expect(inspect.get("settings", "adapterScope")).toBeUndefined(); }
     finally { inspect.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a failed or producerless prefix stops promptly, preserves its journal, and resumes after repair", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-no-producer-"));
+  try {
+    for (const failed of [true, false]) {
+      const database = join(root, `${failed}.sqlite`), store = new Store(database), engine = new Engine(store);
+      const past = { id: "past", type: "user", time: { created: 1 }, text: "PRESERVED_NO_PRODUCER" }, record = extract(past)[0]!;
+      engine.register("session", "u:p", "stable"); const snapshot = engine.admit("session", "past").snapshot;
+      engine.append({ sessionId: "session", generation: 0, projectId: "stable", eventKey: record.key, turnId: "past", kind: record.kind, timestamp: record.timestamp, payload: record.payload });
+      engine.finish("session", "past", "completed"); const job = store.claim(Date.now(), 10000)!;
+      if (failed) store.fail(job, new Error("Compactor did not produce a nonempty summary within 512 UTF-8 bytes PRIVATE_FAILURE"));
+      else store.db.query("UPDATE jobs SET status='revoked' WHERE id=?").run(job.id);
+      const hooks: Record<string, (event: any) => Promise<void>> = {}; let requests = 0;
+      const cleanup = await plugin.setup({ app: { version: "2.0.26" }, options: { database, scopeId: "u:p", fakeSummarizer: true, waitMs: 1000 },
+        session: { hook: async (name: string, callback: any) => { hooks[name] = callback; }, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => { requests++; return [past, { id: "idle-past", type: "idle", time: { created: 2 }, outcome: "succeeded" }, { id: "second", type: "user", time: { created: 3 }, text: "SECOND" }, { id: "idle-second", type: "idle", time: { created: 4 }, outcome: "succeeded" }, { id: "current", type: "user", time: { created: 5 }, text: "CURRENT" }]; } },
+        agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) },
+        tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () {} },
+      } as any);
+      try {
+        const request = { sessionID: "session", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+        const system = request.system, messages = request.messages, start = performance.now();
+        await expect(hooks.context!(request)).rejects.toThrow(failed ? "COMPACTION_FAILED" : "MEMORY_STALLED");
+        expect(performance.now() - start).toBeLessThan(400); expect(requests).toBe(failed ? 0 : 1);
+        expect(request.system).toBe(system); expect(request.messages).toBe(messages);
+        expect(engine.sources("session", 0)).toHaveLength(1); engine.validateSnapshot(snapshot);
+        if (!failed) expect(store.get<any>("adapter", "session").terminalIds).toEqual(["idle-past"]);
+        expect(engine.session("session").disabled).toBeUndefined();
+        const logs = await Bun.file(`${database}.diagnostics.ndjson`).text();
+        expect(logs).toContain('"event":"readiness.blocked"'); expect(logs).toContain('"boundary":1'); expect(logs).toContain('"prefix":0');
+        if (failed) expect(logs).toContain('"errorCode":"SUMMARY_SIZE"');
+        expect(logs).not.toContain("PRIVATE_FAILURE"); expect(logs).not.toContain("PRESERVED_NO_PRODUCER");
+        store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE id=?").run(job.id);
+        await hooks.context!(request);
+        expect(engine.sources("session", 0)).toHaveLength(2); expect(request.messages).toHaveLength(1);
+        expect(JSON.stringify(request.system)).toContain("PRESERVED_NO_PRODUCER");
+      } finally { await cleanup?.(); store.close(); }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native shutdown errors retain originals and only their exact legacy disable resets a stale journal", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-host-shutdown-")), database = join(root, "memory.sqlite");
+  const store = new Store(database), engine = new Engine(store);
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    const past = { id: "past", type: "user", time: { created: 1 }, text: "SHUTDOWN_PRESERVED" }, record = extract(past)[0]!;
+    engine.register("retained", "u:p", "stable"); const snapshot = engine.admit("retained", "past").snapshot;
+    engine.append({ sessionId: "retained", generation: 0, projectId: "stable", eventKey: record.key, turnId: "past", kind: record.kind, timestamp: record.timestamp, payload: record.payload });
+    engine.finish("retained", "past", "completed"); await engine.drain();
+    engine.register("legacy", "u:p", "stable"); store.set("sessions", "legacy", { ...engine.session("legacy"), disabled: "Reconciliation failed: RangeError: Cannot use a closed database" });
+    store.set("adapter", "legacy", { seen: { past: fingerprint(past) }, terminalIds: ["idle-past"] });
+    engine.register("wrong-scope", "u:p", "stable"); store.set("sessions", "wrong-scope", { ...engine.session("wrong-scope"), disabled: "Agent policy reconciliation failed: MemoryError: SCOPE_MISMATCH: Session cannot silently change scope" });
+    const hooks: Record<string, (event: any) => Promise<void>> = {}; let closed = true;
+    cleanup = await plugin.setup({ app: { version: "2.0.26" }, options: { database, scopeId: "u:p", fakeSummarizer: true },
+      session: { hook: async (name: string, callback: any) => { hooks[name] = callback; }, get: async () => { if (closed) throw new RangeError("Cannot use a closed database"); return { projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }; }, context: async () => [past, { id: "idle-past", type: "idle", time: { created: 2 }, outcome: "succeeded" }, { id: "current", type: "user", time: { created: 3 }, text: "CURRENT" }] },
+      agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) },
+      tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () {} },
+    } as any) as typeof cleanup;
+    expect(store.get("adapter", "legacy")).toBeUndefined(); expect(engine.session("legacy").disabled).toBeUndefined();
+    expect(store.get<any>("sessions", "wrong-scope").disabled).toContain("SCOPE_MISMATCH");
+    const request = { sessionID: "legacy", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+    await expect(hooks.context!(request)).rejects.toThrow("Cannot use a closed database");
+    expect(engine.sources("retained", 0)).toHaveLength(1); engine.validateSnapshot(snapshot);
+    expect(engine.session("retained").generation).toBe(0); expect(store.get("adapterErrors", "retained")).toMatchObject({ code: "HOST_UNAVAILABLE" });
+    closed = false; await hooks.context!(request);
+    expect(engine.sources("legacy", 0)).toHaveLength(1); expect(JSON.stringify(request.system)).toContain("SHUTDOWN_PRESERVED");
+    expect(engine.sources("retained", 0)).toHaveLength(1);
+  } finally { await cleanup?.(); store.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("global project discovery preserves its verified location scope and rejects cross-location migration", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-project-discovery-"));
+  try {
+    for (const mode of ["retained", "legacy-retired", "other-location", "denied"]) {
+      const database = join(root, `${mode}.sqlite`), store = new Store(database), engine = new Engine(store), scopeId = automaticScope("global", root);
+      const past = { id: "past", type: "user", time: { created: 1 }, text: "DISCOVERY_SOURCE" }, record = extract(past)[0]!;
+      engine.register("session", scopeId, "global");
+      let snapshot: any;
+      if (mode !== "legacy-retired") {
+        snapshot = engine.admit("session", "past").snapshot;
+        engine.append({ sessionId: "session", generation: 0, projectId: "global", worktreeId: root, eventKey: record.key, turnId: "past", kind: record.kind, timestamp: record.timestamp, payload: record.payload });
+        engine.finish("session", "past", "completed"); await engine.drain();
+      } else {
+        store.set("sessions", "session", { ...engine.session("session"), generation: 1, disabled: "Agent policy reconciliation failed: MemoryError: SCOPE_MISMATCH: Session cannot silently change scope" });
+        store.set("adapter", "session", { seen: { past: fingerprint(past) }, terminalIds: ["idle-past"] });
+      }
+      const directory = mode === "other-location" ? join(root, "elsewhere") : root, hooks: Record<string, (event: any) => Promise<void>> = {};
+      const cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory, project: { id: "discovered-repo", canonical: directory } }, options: { database, scopeId, fakeSummarizer: true },
+        session: { hook: async (name: string, callback: any) => { hooks[name] = callback; }, get: async () => ({ projectID: "discovered-repo", location: { directory }, agent: "build", permissions: mode === "denied" ? [{ action: "optchat.read", resource: scopeId, effect: "deny" }] : [] }), context: async () => [past, { id: "idle-past", type: "idle", time: { created: 2 }, outcome: "succeeded" }, { id: "current", type: "user", time: { created: 3 }, text: "CURRENT" }] },
+        agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) },
+        tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () {} },
+      } as any);
+      try {
+        const request = { sessionID: "session", agent: "build", model: { id: "fixture", providerID: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+        if (mode === "other-location") {
+          await expect(hooks.context!(request)).rejects.toThrow("SCOPE_MISMATCH");
+          expect(store.get<any>("sessions", "session").projectId).toBe("global");
+        } else if (mode === "denied") {
+          await expect(hooks.context!(request)).rejects.toThrow("Memory read permission was revoked");
+          expect(store.get<any>("sessions", "session").disabled).toBe("Memory read permission was revoked");
+        } else {
+          await hooks.context!(request);
+          const session = engine.session("session"); expect(session.projectId).toBe("discovered-repo"); expect(session.scopeId).toBe(scopeId);
+          expect(session.generation).toBe(mode === "legacy-retired" ? 1 : 0); expect(engine.sources("session", session.generation)).toHaveLength(1);
+          expect(JSON.stringify(request.system)).toContain("DISCOVERY_SOURCE");
+          if (snapshot) { engine.validateSnapshot(snapshot); expect(engine.sources("session", 0)[0]!.projectId).toBe("global"); }
+          expect(await Bun.file(`${database}.diagnostics.ndjson`).text()).toContain('"event":"scope.discovery_migrated"');
+        }
+      } finally { await cleanup?.(); store.close(); }
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

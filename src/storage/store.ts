@@ -5,12 +5,13 @@ import { hash, insist, type Job, type JobInput } from "../core/types.ts";
 // JSON envelopes keep migrations small; indexed coordinates enforce critical uniqueness.
 export class Store {
   readonly db: Database;
+  private readonly owner = crypto.randomUUID();
   constructor(path = ":memory:") {
     this.db = new Database(path, { create: true, strict: true });
     if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;");
     const version = (this.db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    insist(version <= 1, "SCHEMA_VERSION", "Database requires a newer OptChat version");
+    insist(version <= 2, "SCHEMA_VERSION", "Database requires a newer OptChat version");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS entities (bucket TEXT NOT NULL, id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(bucket,id));
       CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, session TEXT NOT NULL, generation INTEGER NOT NULL, seq INTEGER NOT NULL, eventKey TEXT NOT NULL, turnId TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(session,generation,seq), UNIQUE(session,generation,eventKey));
@@ -26,8 +27,13 @@ export class Store {
         DELETE FROM node_fts WHERE id=old.id;
       END;
       INSERT INTO node_fts(id,text) SELECT id,json_extract(value,'$.text') FROM nodes WHERE id NOT IN (SELECT id FROM node_fts);
-      PRAGMA user_version=1;
     `);
+    this.transaction(() => {
+      const columns = this.db.query("PRAGMA table_info(jobs)").all() as { name: string }[];
+      if (!columns.some(column => column.name === "ownerPid")) this.db.exec("ALTER TABLE jobs ADD COLUMN ownerPid INTEGER");
+      if (!columns.some(column => column.name === "ownerToken")) this.db.exec("ALTER TABLE jobs ADD COLUMN ownerToken TEXT");
+      this.db.exec("PRAGMA user_version=2");
+    });
   }
   transaction<T>(fn: () => T): T { return this.db.transaction(fn).immediate(); }
   get<T>(bucket: string, id: string): T | undefined {
@@ -49,12 +55,22 @@ export class Store {
   claim(now = Date.now(), leaseMs = 60000, maxRunning = Number.MAX_SAFE_INTEGER): Job | undefined {
     insist(Number.isSafeInteger(maxRunning) && maxRunning > 0, "CONFIG", "Job concurrency must be a positive integer");
     return this.transaction(() => {
+      const owners = this.db.query("SELECT DISTINCT ownerPid FROM jobs WHERE status='running' AND ownerPid IS NOT NULL").all() as { ownerPid: number }[];
+      for (const { ownerPid } of owners) {
+        if (!Number.isSafeInteger(ownerPid) || ownerPid <= 1) continue;
+        try { process.kill(ownerPid, 0); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,ownerPid=NULL,ownerToken=NULL WHERE status='running' AND ownerPid=?").run(ownerPid);
+          }
+        }
+      }
       const live = this.db.query("SELECT count(*) AS n FROM jobs WHERE status='running' AND leaseUntil>?").get(now) as { n: number };
       if (live.n >= maxRunning) return;
       const row = this.db.query("SELECT * FROM jobs WHERE status='pending' OR (status='running' AND leaseUntil<=?) ORDER BY rowid LIMIT 1").get(now) as (Omit<Job, "input"> & { input: string }) | null;
       if (!row) return;
       const fence = row.fence + 1;
-      this.db.query("UPDATE jobs SET status='running', fence=?, leaseUntil=?, attempts=attempts+1 WHERE id=?").run(fence, now + leaseMs, row.id);
+      this.db.query("UPDATE jobs SET status='running', fence=?, leaseUntil=?, attempts=attempts+1,ownerPid=?,ownerToken=? WHERE id=?").run(fence, now + leaseMs, process.pid, this.owner, row.id);
       return { ...row, input: JSON.parse(row.input), fence, leaseUntil: now + leaseMs, attempts: row.attempts + 1, status: "running" };
     });
   }
@@ -75,5 +91,8 @@ export class Store {
   fail(job: Job, error: unknown) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }
-  close() { this.db.close(); }
+  close() {
+    this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,ownerPid=NULL,ownerToken=NULL WHERE status='running' AND ownerToken=?").run(this.owner);
+    this.db.close();
+  }
 }

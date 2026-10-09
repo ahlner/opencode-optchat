@@ -163,6 +163,10 @@ function project(view, get, find, budget) {
 }
 
 // src/core/engine.ts
+var jobFailureCode = (error) => {
+  const text = String(error ?? "");
+  return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
+};
 var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 
 class Engine {
@@ -220,6 +224,19 @@ class Engine {
   }
   view(tree) {
     return this.store.get("views", tree) ?? { tree, revision: 0, prefix: 0, nodes: [], shrinking: false };
+  }
+  preparationStatus(sessionId) {
+    const session = this.session(sessionId), tree = sessionTree(sessionId, session.generation), scope = this.scope(session.scopeId);
+    const rows = this.store.db.query("SELECT id,status,attempts,error,json_extract(input,'$.type') kind FROM jobs WHERE status IN ('pending','running','failed') AND (json_extract(input,'$.tree')=? OR json_extract(input,'$.tree')=? OR (json_extract(input,'$.type')='publication' AND json_extract(input,'$.scopeId')=?))").all(tree, sharedTree(scope.id, scope.epoch), scope.id);
+    const failed = rows.filter((r) => r.status === "failed");
+    return {
+      boundary: this.sourceCount(sessionId, session.generation),
+      prefix: this.view(tree).prefix,
+      pending: rows.filter((r) => r.status === "pending").length,
+      running: rows.filter((r) => r.status === "running").length,
+      failed: failed.length,
+      failures: failed.slice(0, 16).map((r) => ({ jobId: r.id, kind: r.kind, attempt: r.attempts, errorCode: jobFailureCode(r.error) }))
+    };
   }
   admit(sessionId, id) {
     return this.store.transaction(() => {
@@ -370,9 +387,9 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
-    const report = (event) => {
+    const report = (event, error) => {
       try {
-        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil });
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
       } catch {}
     };
     report("job.claim");
@@ -448,7 +465,7 @@ class Engine {
       }
       if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
         this.store.fail(job, error);
-        report("job.failed");
+        report("job.failed", error);
         throw error;
       }
       report("job.unowned");
@@ -600,13 +617,14 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "fs";
 class Store {
   db;
+  owner = crypto.randomUUID();
   constructor(path = ":memory:") {
     this.db = new Database(path, { create: true, strict: true });
     if (path !== ":memory:")
       chmodSync(path, 384);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;");
     const version = this.db.query("PRAGMA user_version").get().user_version;
-    insist(version <= 1, "SCHEMA_VERSION", "Database requires a newer OptChat version");
+    insist(version <= 2, "SCHEMA_VERSION", "Database requires a newer OptChat version");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS entities (bucket TEXT NOT NULL, id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(bucket,id));
       CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, session TEXT NOT NULL, generation INTEGER NOT NULL, seq INTEGER NOT NULL, eventKey TEXT NOT NULL, turnId TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(session,generation,seq), UNIQUE(session,generation,eventKey));
@@ -622,8 +640,15 @@ class Store {
         DELETE FROM node_fts WHERE id=old.id;
       END;
       INSERT INTO node_fts(id,text) SELECT id,json_extract(value,'$.text') FROM nodes WHERE id NOT IN (SELECT id FROM node_fts);
-      PRAGMA user_version=1;
     `);
+    this.transaction(() => {
+      const columns = this.db.query("PRAGMA table_info(jobs)").all();
+      if (!columns.some((column) => column.name === "ownerPid"))
+        this.db.exec("ALTER TABLE jobs ADD COLUMN ownerPid INTEGER");
+      if (!columns.some((column) => column.name === "ownerToken"))
+        this.db.exec("ALTER TABLE jobs ADD COLUMN ownerToken TEXT");
+      this.db.exec("PRAGMA user_version=2");
+    });
   }
   transaction(fn) {
     return this.db.transaction(fn).immediate();
@@ -649,6 +674,18 @@ class Store {
   claim(now = Date.now(), leaseMs = 60000, maxRunning = Number.MAX_SAFE_INTEGER) {
     insist(Number.isSafeInteger(maxRunning) && maxRunning > 0, "CONFIG", "Job concurrency must be a positive integer");
     return this.transaction(() => {
+      const owners = this.db.query("SELECT DISTINCT ownerPid FROM jobs WHERE status='running' AND ownerPid IS NOT NULL").all();
+      for (const { ownerPid } of owners) {
+        if (!Number.isSafeInteger(ownerPid) || ownerPid <= 1)
+          continue;
+        try {
+          process.kill(ownerPid, 0);
+        } catch (error) {
+          if (error.code === "ESRCH") {
+            this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,ownerPid=NULL,ownerToken=NULL WHERE status='running' AND ownerPid=?").run(ownerPid);
+          }
+        }
+      }
       const live = this.db.query("SELECT count(*) AS n FROM jobs WHERE status='running' AND leaseUntil>?").get(now);
       if (live.n >= maxRunning)
         return;
@@ -656,7 +693,7 @@ class Store {
       if (!row)
         return;
       const fence = row.fence + 1;
-      this.db.query("UPDATE jobs SET status='running', fence=?, leaseUntil=?, attempts=attempts+1 WHERE id=?").run(fence, now + leaseMs, row.id);
+      this.db.query("UPDATE jobs SET status='running', fence=?, leaseUntil=?, attempts=attempts+1,ownerPid=?,ownerToken=? WHERE id=?").run(fence, now + leaseMs, process.pid, this.owner, row.id);
       return { ...row, input: JSON.parse(row.input), fence, leaseUntil: now + leaseMs, attempts: row.attempts + 1, status: "running" };
     });
   }
@@ -677,6 +714,7 @@ class Store {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }
   close() {
+    this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,ownerPid=NULL,ownerToken=NULL WHERE status='running' AND ownerToken=?").run(this.owner);
     this.db.close();
   }
 }
@@ -834,4 +872,4 @@ export {
   turnKey
 };
 
-//# debugId=6A2A3633E0988A3164756E2164756E21
+//# debugId=6A54D52FED25D7C164756E2164756E21

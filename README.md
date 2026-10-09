@@ -303,6 +303,18 @@ A failed job never becomes an invented summary.
 `retry` schedules another attempt.
 The configured adapter executes that attempt during the next request.
 
+Preparation now stops immediately when a required summary job has failed.
+Select a working compactor model before selecting **Retry failed compaction** in **OptChat settings**.
+This action retains originals and can incur model costs.
+Diagnostics report the missing prefix, job counts, and sanitized failure categories.
+They do not include conversation content or raw provider errors.
+
+After a crash, new workers reclaim jobs only when their recorded process no longer exists.
+Live workers retain their claims.
+The schema migration preserves legacy jobs with unknown owners until their leases expire.
+Known shutdown errors no longer retire original history.
+The adapter cannot recreate originals that an older version already deleted unless the host still retains them.
+
 To delete a session's OptChat memory:
 
 1. Stop the service that uses the database.

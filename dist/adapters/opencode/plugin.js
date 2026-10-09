@@ -168,6 +168,10 @@ function project(view, get, find, budget) {
 }
 
 // src/core/engine.ts
+var jobFailureCode = (error) => {
+  const text = String(error ?? "");
+  return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
+};
 var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 
 class Engine {
@@ -225,6 +229,19 @@ class Engine {
   }
   view(tree) {
     return this.store.get("views", tree) ?? { tree, revision: 0, prefix: 0, nodes: [], shrinking: false };
+  }
+  preparationStatus(sessionId) {
+    const session = this.session(sessionId), tree = sessionTree(sessionId, session.generation), scope = this.scope(session.scopeId);
+    const rows = this.store.db.query("SELECT id,status,attempts,error,json_extract(input,'$.type') kind FROM jobs WHERE status IN ('pending','running','failed') AND (json_extract(input,'$.tree')=? OR json_extract(input,'$.tree')=? OR (json_extract(input,'$.type')='publication' AND json_extract(input,'$.scopeId')=?))").all(tree, sharedTree(scope.id, scope.epoch), scope.id);
+    const failed = rows.filter((r) => r.status === "failed");
+    return {
+      boundary: this.sourceCount(sessionId, session.generation),
+      prefix: this.view(tree).prefix,
+      pending: rows.filter((r) => r.status === "pending").length,
+      running: rows.filter((r) => r.status === "running").length,
+      failed: failed.length,
+      failures: failed.slice(0, 16).map((r) => ({ jobId: r.id, kind: r.kind, attempt: r.attempts, errorCode: jobFailureCode(r.error) }))
+    };
   }
   admit(sessionId, id) {
     return this.store.transaction(() => {
@@ -375,9 +392,9 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
-    const report = (event) => {
+    const report = (event, error) => {
       try {
-        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil });
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
       } catch {}
     };
     report("job.claim");
@@ -453,7 +470,7 @@ class Engine {
       }
       if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
         this.store.fail(job, error);
-        report("job.failed");
+        report("job.failed", error);
         throw error;
       }
       report("job.unowned");
@@ -605,13 +622,14 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "fs";
 class Store {
   db;
+  owner = crypto.randomUUID();
   constructor(path = ":memory:") {
     this.db = new Database(path, { create: true, strict: true });
     if (path !== ":memory:")
       chmodSync(path, 384);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;");
     const version = this.db.query("PRAGMA user_version").get().user_version;
-    insist(version <= 1, "SCHEMA_VERSION", "Database requires a newer OptChat version");
+    insist(version <= 2, "SCHEMA_VERSION", "Database requires a newer OptChat version");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS entities (bucket TEXT NOT NULL, id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(bucket,id));
       CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, session TEXT NOT NULL, generation INTEGER NOT NULL, seq INTEGER NOT NULL, eventKey TEXT NOT NULL, turnId TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(session,generation,seq), UNIQUE(session,generation,eventKey));
@@ -627,8 +645,15 @@ class Store {
         DELETE FROM node_fts WHERE id=old.id;
       END;
       INSERT INTO node_fts(id,text) SELECT id,json_extract(value,'$.text') FROM nodes WHERE id NOT IN (SELECT id FROM node_fts);
-      PRAGMA user_version=1;
     `);
+    this.transaction(() => {
+      const columns = this.db.query("PRAGMA table_info(jobs)").all();
+      if (!columns.some((column) => column.name === "ownerPid"))
+        this.db.exec("ALTER TABLE jobs ADD COLUMN ownerPid INTEGER");
+      if (!columns.some((column) => column.name === "ownerToken"))
+        this.db.exec("ALTER TABLE jobs ADD COLUMN ownerToken TEXT");
+      this.db.exec("PRAGMA user_version=2");
+    });
   }
   transaction(fn) {
     return this.db.transaction(fn).immediate();
@@ -654,6 +679,18 @@ class Store {
   claim(now = Date.now(), leaseMs = 60000, maxRunning = Number.MAX_SAFE_INTEGER) {
     insist(Number.isSafeInteger(maxRunning) && maxRunning > 0, "CONFIG", "Job concurrency must be a positive integer");
     return this.transaction(() => {
+      const owners = this.db.query("SELECT DISTINCT ownerPid FROM jobs WHERE status='running' AND ownerPid IS NOT NULL").all();
+      for (const { ownerPid } of owners) {
+        if (!Number.isSafeInteger(ownerPid) || ownerPid <= 1)
+          continue;
+        try {
+          process.kill(ownerPid, 0);
+        } catch (error) {
+          if (error.code === "ESRCH") {
+            this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,ownerPid=NULL,ownerToken=NULL WHERE status='running' AND ownerPid=?").run(ownerPid);
+          }
+        }
+      }
       const live = this.db.query("SELECT count(*) AS n FROM jobs WHERE status='running' AND leaseUntil>?").get(now);
       if (live.n >= maxRunning)
         return;
@@ -661,7 +698,7 @@ class Store {
       if (!row)
         return;
       const fence = row.fence + 1;
-      this.db.query("UPDATE jobs SET status='running', fence=?, leaseUntil=?, attempts=attempts+1 WHERE id=?").run(fence, now + leaseMs, row.id);
+      this.db.query("UPDATE jobs SET status='running', fence=?, leaseUntil=?, attempts=attempts+1,ownerPid=?,ownerToken=? WHERE id=?").run(fence, now + leaseMs, process.pid, this.owner, row.id);
       return { ...row, input: JSON.parse(row.input), fence, leaseUntil: now + leaseMs, attempts: row.attempts + 1, status: "running" };
     });
   }
@@ -682,6 +719,7 @@ class Store {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }
   close() {
+    this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,ownerPid=NULL,ownerToken=NULL WHERE status='running' AND ownerToken=?").run(this.owner);
     this.db.close();
   }
 }
@@ -882,7 +920,7 @@ function memoryPolicy(rules, scopeId) {
 }
 
 // src/adapters/opencode/settings.ts
-import { homedir } from "os";
+import { homedir as homedir2 } from "os";
 import { join, isAbsolute } from "path";
 
 // src/adapters/opencode/settings-rpc.ts
@@ -956,7 +994,7 @@ function memoryStatus(database, enabled) {
       status.jobs.expired = db.query("SELECT count(*) AS count FROM jobs WHERE status='running' AND leaseUntil<=?").get(Date.now()).count;
       const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get();
       if (error)
-        status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
+        status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
       return status;
     })();
   } finally {
@@ -978,17 +1016,35 @@ function retryMemoryJobs(database) {
   }
 }
 
+// src/adapters/opencode/settings-scope.ts
+import { homedir } from "os";
+import { realpathSync } from "fs";
+function automaticScope(projectId, canonical) {
+  return `local:${hash(JSON.stringify([homedir(), projectId, projectId === "global" ? canonical : undefined]))}`;
+}
+function sameDirectory(left, right) {
+  if (!left || !right)
+    return false;
+  if (left === right)
+    return true;
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return false;
+  }
+}
+
 // src/adapters/opencode/settings.ts
 async function setupSettings(ctx, start) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
   if (!ctx.rpc || !ctx.storage)
     return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;
-  const identity = hash(JSON.stringify([homedir(), ctx.location.project.id, ctx.location.project.id === "global" ? ctx.location.project.canonical : undefined]));
+  const scopeId = automaticScope(ctx.location.project.id, ctx.location.project.canonical), identity = scopeId.slice("local:".length);
   const defaults = {
     enabled: false,
-    database: join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "optchat", identity, "memory.sqlite"),
-    scopeId: `local:${identity}`,
+    database: join(process.env.XDG_DATA_HOME || join(homedir2(), ".local", "share"), "optchat", identity, "memory.sqlite"),
+    scopeId,
     memoryBytes: 16000,
     safetyTokens: 2048,
     waitMs: 30000
@@ -1166,7 +1222,7 @@ function pause(ms, signal) {
 
 // src/adapters/opencode/diagnostics.ts
 import { appendFileSync, closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, renameSync, statSync } from "fs";
-var fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash"]);
+var fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash", "boundary", "prefix", "expectedScopeHash", "actualScopeHash", "expectedProjectHash", "actualProjectHash"]);
 function diagnosticCode(error) {
   if (error instanceof MemoryError)
     return /^[A-Z_]{1,64}$/.test(error.code) ? error.code : "MEMORY_ERROR";
@@ -1303,10 +1359,13 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()));
   diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
+  const falseShutdownDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed|Event stream failed): RangeError: Cannot use a closed database$/;
   for (const session of store.all("sessions"))
-    if (session.disabled && falseReadinessDisable.test(session.disabled)) {
+    if (session.disabled && (falseReadinessDisable.test(session.disabled) || falseShutdownDisable.test(session.disabled))) {
       delete session.disabled;
       store.set("sessions", session.id, session);
+      if (!store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(session.id, session.generation).n)
+        store.remove("adapter", session.id);
     }
   let activeJob;
   const compactor = config.fakeSummarizer ? new FakeSummarizer : new ModelSummarizer(async (prompt, signal) => {
@@ -1366,10 +1425,16 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   };
   const compact = async () => {
     try {
+      for (const session of store.all("sessions"))
+        if (!session.disabled && session.scopeId === config.scopeId && engine.preparationStatus(session.id).failed) {
+          throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
+        }
       await diagnostics.span("compactor.drain", () => engine.drain(1e5, operationSignal), { parentId: activeOperation });
     } catch (error) {
       if (operationSignal?.aborted)
         throw operationSignal.reason;
+      if (error instanceof MemoryError && error.code === "COMPACTION_FAILED")
+        throw error;
       throw new MemoryError("COMPACTION_FAILED", String(error));
     }
   };
@@ -1387,17 +1452,56 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     }
   };
   const reconciliationFailure = (id, reason, error) => {
-    if (error instanceof MemoryError && ["COMPACTION_FAILED", "MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
-      store.set("adapterErrors", id, { code: error.code, timestamp: new Date().toISOString() });
+    if (!(error instanceof MemoryError) || ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
+      store.set("adapterErrors", id, { code: error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE", timestamp: new Date().toISOString() });
       return;
     }
     disable(id, reason);
+  };
+  const readinessFailure = (sessionId, error) => {
+    if (!(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || operationSignal?.aborted)
+      return error;
+    const session = store.get("sessions", sessionId);
+    if (!session || session.disabled)
+      return error;
+    const status = engine.preparationStatus(sessionId);
+    diagnostics.emit("readiness.blocked", { sessionId, parentId: activeOperation, boundary: status.boundary, prefix: status.prefix, pending: status.pending, running: status.running, failed: status.failed });
+    for (const failure of status.failures)
+      diagnostics.emit("readiness.failed_job", { sessionId, parentId: activeOperation, ...failure });
+    if (status.failed)
+      return new MemoryError("COMPACTION_FAILED", "Required memory jobs failed. Select a working compactor and use Retry failed compaction. Originals remain retained.");
+    if (!status.pending && !status.running && status.prefix < status.boundary)
+      return new MemoryError("MEMORY_STALLED", "The original prefix has no complete summaries and no runnable worker. Originals remain retained.");
+    return error;
   };
   const reconcile = async (sessionID, requestAgent) => {
     const trace = diagnostics.begin("reconcile", { sessionId: sessionID, parentId: activeOperation });
     try {
       const info = await operation(() => ctx.session.get({ sessionID }), "host.session.get");
-      const s = engine.register(sessionID, config.scopeId, config.projectId ?? info.projectID, info.parentID);
+      let existing = store.get("sessions", sessionID);
+      const projectId = config.projectId ?? info.projectID;
+      const legacyScopeDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed): MemoryError: SCOPE_MISMATCH: Session cannot silently change scope$/;
+      const nativeDirectory = info.location?.directory, canonical = ctx.location?.project?.canonical;
+      const verifiedLegacyScope = nativeDirectory && (config.scopeId === automaticScope("global", nativeDirectory) || sameDirectory(nativeDirectory, canonical) && config.scopeId === automaticScope("global", canonical));
+      if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined && existing.scopeId === config.scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) && ctx.location?.project?.id === projectId && verifiedLegacyScope && (!existing.disabled || legacyScopeDisable.test(existing.disabled))) {
+        store.transaction(() => {
+          existing.projectId = projectId;
+          delete existing.disabled;
+          store.set("sessions", sessionID, existing);
+          if (!store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(sessionID, existing.generation).n)
+            store.remove("adapter", sessionID);
+        });
+        diagnostics.emit("scope.discovery_migrated", { sessionId: sessionID, actualProjectHash: hash(projectId), actualScopeHash: hash(config.scopeId) });
+      }
+      if (existing && (existing.scopeId !== config.scopeId || existing.projectId !== projectId))
+        diagnostics.emit("scope.mismatch", {
+          sessionId: sessionID,
+          expectedScopeHash: hash(existing.scopeId),
+          actualScopeHash: hash(config.scopeId),
+          expectedProjectHash: hash(existing.projectId),
+          actualProjectHash: hash(projectId)
+        });
+      const s = engine.register(sessionID, config.scopeId, projectId, info.parentID);
       const agentId = requestAgent ?? info.agent ?? store.get("adapter", sessionID)?.agentId ?? "build";
       const deadline = Date.now() + waitMs;
       let agent;
@@ -1532,7 +1636,11 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           const ingest = diagnostics.begin("reconcile.ingest", { sessionId: sessionID, parentId: trace.operationId, messages: segment.length });
           try {
             const id = journal.activeId ?? firstUser.id;
-            const turn = store.get("turns", key(sessionID, s.generation, id)) ?? engine.admit(sessionID, id);
+            let turn = store.get("turns", key(sessionID, s.generation, id));
+            if (!turn) {
+              await compact();
+              turn = engine.admit(sessionID, id);
+            }
             if (!turn.outcome) {
               for (const message of segment)
                 for (const r of extract(message))
@@ -1543,6 +1651,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
               if (extract(message).length)
                 journal.seen[message.id] = fingerprint(message);
             journal.activeId = undefined;
+            journal.terminalIds.push(m.id);
+            store.set("adapter", sessionID, journal);
           } catch (error) {
             ingest.end(error);
             throw error;
@@ -1551,14 +1661,16 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           }
           await compact();
         }
-        journal.terminalIds.push(m.id);
+        if (!journal.terminalIds.includes(m.id))
+          journal.terminalIds.push(m.id);
         segment = [];
       }
       store.set("adapter", sessionID, journal);
       return { raw, active: segment, journal };
     } catch (error) {
-      trace.end(error);
-      throw error;
+      const classified = readinessFailure(sessionID, error);
+      trace.end(classified);
+      throw classified;
     } finally {
       trace.end();
     }
@@ -1581,6 +1693,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
     try {
       const result = await serial(async () => {
+        let assembling = false;
         for (;; ) {
           try {
             insist(Date.now() < deadline, "MEMORY_NOT_READY", "Bounded admission wait expired");
@@ -1599,14 +1712,24 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
             insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Cannot assemble context without model context/output limits");
             const outputTokens = typeof event.options.maxTokens === "number" ? event.options.maxTokens : model.limit.output;
             insist(outputTokens <= model.limit.output, "CONFIG", "Requested output exceeds the model output limit");
+            assembling = true;
             const result = await diagnostics.span("context.assemble", async () => assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } }), { parentId: activeOperation, sessionId: event.sessionID });
             const previousError = store.get("adapterErrors", event.sessionID);
-            if (previousError && ["MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code))
+            if (previousError && ["MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code))
               store.remove("adapterErrors", event.sessionID);
             return result;
           } catch (error) {
             if (operationSignal?.aborted || !(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline)
               throw error;
+            const classified = readinessFailure(event.sessionID, error);
+            if (classified !== error)
+              throw classified;
+            if (assembling) {
+              const status = engine.preparationStatus(event.sessionID);
+              if (!status.pending && !status.running)
+                throw error;
+              assembling = false;
+            }
             await operation(() => Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now()))));
           }
         }
@@ -1701,7 +1824,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   })().catch((error) => {
     if (!stopped) {
       for (const s of store.all("sessions"))
-        disable(s.id, `Event stream failed: ${String(error)}`);
+        reconciliationFailure(s.id, `Event stream failed: ${String(error)}`, error);
     }
   });
   diagnostics.emit("runtime.ready");
@@ -1720,4 +1843,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=5689545D20F6D5E264756E2164756E21
+//# debugId=12A638FEB053360864756E2164756E21

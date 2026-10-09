@@ -9,6 +9,7 @@ import { setupSettings } from "./settings.ts";
 import { compactorRequest } from "./compactor-request.ts";
 import { abortable } from "../../core/abort.ts";
 import { Diagnostics } from "./diagnostics.ts";
+import { automaticScope, sameDirectory } from "./settings-scope.ts";
 
 interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
@@ -34,8 +35,11 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   // Recover only the exact readiness error that older adapters incorrectly made permanent.
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
-  for (const session of store.all<Session>("sessions")) if (session.disabled && falseReadinessDisable.test(session.disabled)) {
+  const falseShutdownDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed|Event stream failed): RangeError: Cannot use a closed database$/;
+  for (const session of store.all<Session>("sessions")) if (session.disabled && (falseReadinessDisable.test(session.disabled) || falseShutdownDisable.test(session.disabled))) {
     delete session.disabled; store.set("sessions", session.id, session);
+    // Older error handling retired originals but left their message journal intact.
+    if (!(store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(session.id, session.generation) as { n: number }).n) store.remove("adapter", session.id);
   }
   let activeJob: string | undefined;
   const compactor = config.fakeSummarizer ? new FakeSummarizer() : new ModelSummarizer(async (prompt, signal) => {
@@ -79,8 +83,17 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     return parent ? abortable(() => result, parent) : result;
   };
   const compact = async () => {
-    try { await diagnostics.span("compactor.drain", () => engine.drain(100000, operationSignal), { parentId: activeOperation }); }
-    catch (error) { if (operationSignal?.aborted) throw operationSignal.reason; throw new MemoryError("COMPACTION_FAILED", String(error)); }
+    try {
+      // Polling and unrelated model calls cannot repair a failed retained dependency.
+      for (const session of store.all<Session>("sessions")) if (!session.disabled && session.scopeId === config.scopeId && engine.preparationStatus(session.id).failed) {
+        throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
+      }
+      await diagnostics.span("compactor.drain", () => engine.drain(100000, operationSignal), { parentId: activeOperation });
+    } catch (error) {
+      if (operationSignal?.aborted) throw operationSignal.reason;
+      if (error instanceof MemoryError && error.code === "COMPACTION_FAILED") throw error;
+      throw new MemoryError("COMPACTION_FAILED", String(error));
+    }
   };
   const disable = (id: string, reason: string) => {
     let s = store.get<Session>("sessions", id);
@@ -91,17 +104,48 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (s) { s.disabled = reason; store.set("sessions", id, s); }
   };
   const reconciliationFailure = (id: string, reason: string, error: unknown) => {
-    if (error instanceof MemoryError && ["COMPACTION_FAILED", "MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
-      store.set("adapterErrors", id, { code: error.code, timestamp: new Date().toISOString() });
+    if (!(error instanceof MemoryError) || ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code)) {
+      store.set("adapterErrors", id, { code: error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE", timestamp: new Date().toISOString() });
       return; // Operational and readiness errors do not revoke history or native permissions.
     }
     disable(id, reason);
+  };
+  const readinessFailure = (sessionId: string, error: unknown) => {
+    if (!(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || operationSignal?.aborted) return error;
+    const session = store.get<Session>("sessions", sessionId);
+    if (!session || session.disabled) return error;
+    const status = engine.preparationStatus(sessionId);
+    diagnostics.emit("readiness.blocked", { sessionId, parentId: activeOperation, boundary: status.boundary, prefix: status.prefix, pending: status.pending, running: status.running, failed: status.failed });
+    for (const failure of status.failures) diagnostics.emit("readiness.failed_job", { sessionId, parentId: activeOperation, ...failure });
+    if (status.failed) return new MemoryError("COMPACTION_FAILED", "Required memory jobs failed. Select a working compactor and use Retry failed compaction. Originals remain retained.");
+    if (!status.pending && !status.running && status.prefix < status.boundary) return new MemoryError("MEMORY_STALLED", "The original prefix has no complete summaries and no runnable worker. Originals remain retained.");
+    return error;
   };
   const reconcile = async (sessionID: Parameters<PluginContext["session"]["context"]>[0]["sessionID"], requestAgent?: string) => {
     const trace = diagnostics.begin("reconcile", { sessionId: sessionID, parentId: activeOperation });
     try {
     const info = await operation(() => ctx.session.get({ sessionID }), "host.session.get");
-    const s = engine.register(sessionID, config.scopeId, config.projectId ?? info.projectID, info.parentID);
+    let existing = store.get<Session>("sessions", sessionID);
+    const projectId = config.projectId ?? info.projectID;
+    const legacyScopeDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed): MemoryError: SCOPE_MISMATCH: Session cannot silently change scope$/;
+    // Native discovery can replace global metadata without changing the configured trust scope.
+    const nativeDirectory = info.location?.directory, canonical = ctx.location?.project?.canonical;
+    const verifiedLegacyScope = nativeDirectory && (config.scopeId === automaticScope("global", nativeDirectory) ||
+      sameDirectory(nativeDirectory, canonical) && config.scopeId === automaticScope("global", canonical));
+    if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined &&
+      existing.scopeId === config.scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) &&
+      ctx.location?.project?.id === projectId && verifiedLegacyScope &&
+      (!existing.disabled || legacyScopeDisable.test(existing.disabled))) {
+      store.transaction(() => {
+        existing!.projectId = projectId; delete existing!.disabled; store.set("sessions", sessionID, existing);
+        if (!(store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(sessionID, existing!.generation) as { n: number }).n) store.remove("adapter", sessionID);
+      });
+      diagnostics.emit("scope.discovery_migrated", { sessionId: sessionID, actualProjectHash: hash(projectId), actualScopeHash: hash(config.scopeId) });
+    }
+    if (existing && (existing.scopeId !== config.scopeId || existing.projectId !== projectId)) diagnostics.emit("scope.mismatch", {
+      sessionId: sessionID, expectedScopeHash: hash(existing.scopeId), actualScopeHash: hash(config.scopeId), expectedProjectHash: hash(existing.projectId), actualProjectHash: hash(projectId),
+    });
+    const s = engine.register(sessionID, config.scopeId, projectId, info.parentID);
     const agentId = requestAgent ?? info.agent ?? store.get<Journal>("adapter", sessionID)?.agentId ?? "build";
     const deadline = Date.now() + waitMs;
     let agent: Awaited<ReturnType<PluginContext["agent"]["get"]>>;
@@ -211,22 +255,27 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         const ingest = diagnostics.begin("reconcile.ingest", { sessionId: sessionID, parentId: trace.operationId, messages: segment.length });
         try {
         const id = journal.activeId ?? firstUser.id;
-        const turn = store.get<Turn>("turns", key(sessionID, s.generation, id)) ?? engine.admit(sessionID, id);
+        let turn = store.get<Turn>("turns", key(sessionID, s.generation, id));
+        // A recovered journal can precede unfinished jobs from the previous process.
+        // Run those jobs before admission, not only after admitting the next turn.
+        if (!turn) { await compact(); turn = engine.admit(sessionID, id); }
         if (!turn.outcome) {
           for (const message of segment) for (const r of extract(message)) engine.append({ sessionId: sessionID, generation: s.generation, projectId: s.projectId, worktreeId: info.location.directory, eventKey: r.key, turnId: id, kind: r.kind, timestamp: r.timestamp, payload: r.payload, callId: r.callId, truncated: r.truncated });
           engine.finish(sessionID, id, m.outcome === "succeeded" ? "completed" : m.outcome === "failed" ? "failed" : "interrupted", new Date(m.time.created).toISOString());
         }
         for (const message of segment) if (extract(message).length) journal.seen[message.id] = fingerprint(message);
         journal.activeId = undefined;
+        // Persist each sealed terminal before a model call or the next admission can fail.
+        journal.terminalIds.push(m.id); store.set("adapter", sessionID, journal);
         } catch (error) { ingest.end(error); throw error; }
         finally { ingest.end(); }
         await compact();
       }
-      journal.terminalIds.push(m.id); segment = [];
+      if (!journal.terminalIds.includes(m.id)) journal.terminalIds.push(m.id); segment = [];
     }
     store.set("adapter", sessionID, journal);
     return { raw, active: segment, journal };
-    } catch (error) { trace.end(error); throw error; }
+    } catch (error) { const classified = readinessFailure(sessionID, error); trace.end(classified); throw classified; }
     finally { trace.end(); }
   };
   // Reconcile known sessions after restart, before pinning another request's view.
@@ -247,6 +296,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
     try {
     const result = await serial(async () => {
+      let assembling = false;
       for (;;) {
         try {
           insist(Date.now() < deadline, "MEMORY_NOT_READY", "Bounded admission wait expired");
@@ -262,12 +312,20 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Cannot assemble context without model context/output limits");
           const outputTokens = typeof event.options.maxTokens === "number" ? event.options.maxTokens : model.limit.output;
           insist(outputTokens <= model.limit.output, "CONFIG", "Requested output exceeds the model output limit");
+           assembling = true;
            const result = await diagnostics.span("context.assemble", async () => assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } }), { parentId: activeOperation, sessionId: event.sessionID });
           const previousError = store.get<{ code: string }>("adapterErrors", event.sessionID);
-          if (previousError && ["MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code)) store.remove("adapterErrors", event.sessionID);
+           if (previousError && ["MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code)) store.remove("adapterErrors", event.sessionID);
           return result;
         } catch (error) {
-          if (operationSignal?.aborted || !(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline) throw error;
+           if (operationSignal?.aborted || !(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline) throw error;
+           const classified = readinessFailure(event.sessionID, error);
+           if (classified !== error) throw classified;
+           if (assembling) {
+             const status = engine.preparationStatus(event.sessionID);
+             if (!status.pending && !status.running) throw error;
+             assembling = false;
+           }
           // A different SQLite worker can be building the required durable cover.
           await operation(() => Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now()))));
         }
@@ -335,7 +393,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         try { await reconcile(id as Parameters<typeof reconcile>[0]); } catch (error) { reconciliationFailure(id, String(error), error); }
       });
     }
-  })().catch(error => { if (!stopped) { for (const s of store.all<Session>("sessions")) disable(s.id, `Event stream failed: ${String(error)}`); } });
+   })().catch(error => { if (!stopped) { for (const s of store.all<Session>("sessions")) reconciliationFailure(s.id, `Event stream failed: ${String(error)}`, error); } });
   diagnostics.emit("runtime.ready");
   return async () => { diagnostics.emit("shutdown.request"); stopped = true; controller.abort(); await events; await tail; diagnostics.close(); store.close(); };
 } });

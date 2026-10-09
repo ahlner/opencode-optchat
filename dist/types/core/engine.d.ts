@@ -19,6 +19,7 @@ export interface EngineOptions {
         kind: string;
         fence: number;
         leaseUntil: number;
+        errorCode?: string;
     }) => void;
 }
 export declare class Engine {
@@ -35,6 +36,19 @@ export declare class Engine {
     node(id: string): Node;
     findNode(tree: string, start: number, count: number): Node | undefined;
     view(tree: string): View;
+    preparationStatus(sessionId: string): {
+        boundary: number;
+        prefix: number;
+        pending: number;
+        running: number;
+        failed: number;
+        failures: {
+            jobId: string;
+            kind: string;
+            attempt: number;
+            errorCode: string;
+        }[];
+    };
     admit(sessionId: string, id: string): Turn;
     validateSnapshot(snapshot: Snapshot): void;
     append(input: SourceInput): SourceRecord;

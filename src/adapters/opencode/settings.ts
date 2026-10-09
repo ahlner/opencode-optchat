@@ -1,19 +1,20 @@
 import type { Context, Cleanup } from "@opencode/plugin/promise/plugin";
 import { homedir } from "node:os";
 import { join, isAbsolute } from "node:path";
-import { Store, insist, hash, type Turn } from "../../index.ts";
+import { Store, insist, type Turn } from "../../index.ts";
 import { SettingsRpc, type Settings } from "./settings-rpc.ts";
 import { memoryStatus, retryMemoryJobs } from "./settings-status.ts";
+import { automaticScope } from "./settings-scope.ts";
 
 export async function setupSettings(ctx: Context, start: (ctx: Context) => Promise<Cleanup | void> | Cleanup | void) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
   // Legacy programmatic contexts do not provide the settings transport.
   if (!ctx.rpc || !ctx.storage) return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;
-  const identity = hash(JSON.stringify([homedir(), ctx.location.project.id, ctx.location.project.id === "global" ? ctx.location.project.canonical : undefined]));
+  const scopeId = automaticScope(ctx.location.project.id, ctx.location.project.canonical), identity = scopeId.slice("local:".length);
   const defaults: Settings = {
     enabled: false, database: join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "optchat", identity, "memory.sqlite"),
-    scopeId: `local:${identity}`, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000,
+    scopeId, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000,
   };
   let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } as Settings :
     { ...defaults, ...await ctx.storage.get("settings.v1") as Partial<Settings> };

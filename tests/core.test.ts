@@ -19,6 +19,42 @@ async function complete(e: Engine, sessionId: string, id: string, payloads: stri
   e.finish(sessionId, id, outcome); await e.drain(); return records;
 }
 const pubs = (e: Engine) => e.store.all<Publication>("publications");
+test("schema migration preserves ownerless leases and close releases only this store's claims", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-schema-test-")), path = join(root, "memory.sqlite");
+  const { Database } = await import("bun:sqlite");
+  const legacy = new Database(path);
+  legacy.exec("CREATE TABLE jobs(id TEXT PRIMARY KEY,input TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',fence INTEGER NOT NULL DEFAULT 0,leaseUntil INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,error TEXT); PRAGMA user_version=1");
+  legacy.query("INSERT INTO jobs VALUES(?,?,?,?,?,?,?)").run("legacy", JSON.stringify({ type: "leaf", tree: "old", sourceId: "old", start: 0 }), "running", 7, Date.now() + 300000, 1, null);
+  legacy.close();
+  const first = new Store(path), second = new Store(path);
+  try {
+    expect(first.claim(Date.now(), 300000, 1)).toBeUndefined();
+    expect((first.db.query("PRAGMA user_version").get() as any).user_version).toBe(2);
+    first.db.query("UPDATE jobs SET leaseUntil=0 WHERE id='legacy'").run();
+    const claim = first.claim(Date.now(), 300000, 1)!;
+    expect(claim.fence).toBe(8); second.close(); expect(first.owns(claim)).toBe(true);
+    first.close();
+    const reopened = new Store(path);
+    expect(reopened.claim(Date.now(), 300000, 1)!.fence).toBe(10);
+    reopened.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+test("dead process claims recover before expiry without stealing live peer claims", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-owner-test-")), path = join(root, "memory.sqlite");
+  const storePath = new URL("../src/storage/store.ts", import.meta.url).pathname;
+  const child = Bun.spawn([process.execPath, "-e", `import { Store } from ${JSON.stringify(storePath)}; const s = new Store(${JSON.stringify(path)}); s.enqueue({type:'leaf',tree:'test',sourceId:'test',start:0}); s.claim(Date.now(),300000,1); console.log('claimed'); await new Promise(()=>{});`], { stdout: "pipe", stderr: "pipe" });
+  const reader = child.stdout.getReader(); await reader.read(); reader.releaseLock();
+  const peer = new Store(path);
+  try {
+    expect(peer.claim(Date.now(), 300000, 1)).toBeUndefined();
+    child.kill("SIGKILL"); await child.exited;
+    const replacement = peer.claim(Date.now(), 300000, 1)!;
+    expect(replacement).toBeDefined(); expect(replacement.fence).toBe(3);
+    const other = new Store(path);
+    expect(other.claim(Date.now(), 300000, 1)).toBeUndefined();
+    other.close(); expect(peer.owns(replacement)).toBe(true);
+  } finally { child.kill(); await child.exited; peer.close(); await rm(root, { recursive: true, force: true }); }
+});
 describe("lifecycle prefix preservation", () => {
   test("an archive larger than ten contexts stays bounded and retains exact searchable originals", async () => {
     const e = make(); register(e, "a"); register(e, "b");

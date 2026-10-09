@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { type Job, type JobInput } from "../core/types.ts";
 export declare class Store {
     readonly db: Database;
+    private readonly owner;
     constructor(path?: string);
     transaction<T>(fn: () => T): T;
     get<T>(bucket: string, id: string): T | undefined;

@@ -2,7 +2,7 @@ import { appendFileSync, closeSync, constants, fchmodSync, fstatSync, openSync, 
 import { MemoryError } from "../../core/types.ts";
 
 // Keep this allowlist independent from provider errors and conversation payloads.
-const fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash"]);
+const fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash", "boundary", "prefix", "expectedScopeHash", "actualScopeHash", "expectedProjectHash", "actualProjectHash"]);
 export function diagnosticCode(error: unknown): string {
   if (error instanceof MemoryError) return /^[A-Z_]{1,64}$/.test(error.code) ? error.code : "MEMORY_ERROR";
   return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name) ? error.name : "ERROR";

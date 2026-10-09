@@ -6,7 +6,11 @@ import { rangeCover, validateCover } from "./tree.ts";
 import { mergeView, project } from "./views.ts";
 
 interface Scope { id: string; epoch: number; policy: number; highWater: number }
-export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number }) => void }
+const jobFailureCode = (error: unknown) => {
+  const text = String(error ?? "");
+  return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
+};
+export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string }) => void }
 const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 export class Engine {
   readonly options: EngineOptions;
@@ -53,6 +57,14 @@ export class Engine {
     return row ? JSON.parse(row.value) : undefined;
   }
   view(tree: string): View { return this.store.get<View>("views", tree) ?? { tree, revision: 0, prefix: 0, nodes: [], shrinking: false }; }
+  preparationStatus(sessionId: string) {
+    const session = this.session(sessionId), tree = sessionTree(sessionId, session.generation), scope = this.scope(session.scopeId);
+    const rows = this.store.db.query("SELECT id,status,attempts,error,json_extract(input,'$.type') kind FROM jobs WHERE status IN ('pending','running','failed') AND (json_extract(input,'$.tree')=? OR json_extract(input,'$.tree')=? OR (json_extract(input,'$.type')='publication' AND json_extract(input,'$.scopeId')=?))").all(tree, sharedTree(scope.id, scope.epoch), scope.id) as { id: string; status: string; attempts: number; error: string | null; kind: string }[];
+    const failed = rows.filter(r => r.status === "failed");
+    return { boundary: this.sourceCount(sessionId, session.generation), prefix: this.view(tree).prefix,
+      pending: rows.filter(r => r.status === "pending").length, running: rows.filter(r => r.status === "running").length, failed: failed.length,
+      failures: failed.slice(0, 16).map(r => ({ jobId: r.id, kind: r.kind, attempt: r.attempts, errorCode: jobFailureCode(r.error) })) };
+  }
   admit(sessionId: string, id: string): Turn {
     return this.store.transaction(() => {
       const session = this.session(sessionId), tk = key(sessionId, session.generation, id);
@@ -164,7 +176,7 @@ export class Engine {
     signal?.throwIfAborted();
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job) return false;
-    const report = (event: string) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil }); } catch {} };
+    const report = (event: string, error?: unknown) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...(error === undefined ? {} : { errorCode: jobFailureCode(error) }) }); } catch {} };
     report("job.claim");
     const renewal = setInterval(() => {
       try { if (!this.store.renew(job, this.options.leaseMs)) report("job.renew.unowned"); }
@@ -213,7 +225,7 @@ export class Engine {
     } catch (error) {
       // Losing ownership is coordination, not a failed model call. Never fail the replacement job.
       if (signal?.aborted) { this.store.release(job); report("job.release"); throw signal.reason; }
-      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) { this.store.fail(job, error); report("job.failed"); throw error; }
+      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) { this.store.fail(job, error); report("job.failed", error); throw error; }
       report("job.unowned");
     }
     finally { clearInterval(renewal); }

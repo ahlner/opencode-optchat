@@ -408,3 +408,50 @@ That final run retained `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optcha
 These tests do not establish the cause of the owner's session failure.
 The real-session trace remains necessary for that diagnosis.
 No existing user session, configuration, service, credential, or memory database changed during these tests.
+
+## Real incident: blocked preparation and legacy project metadata
+
+The owner's diagnostic trace showed repeated admission failures without model requests or runnable jobs.
+Heartbeats continued with small delays. This did not show a blocked event loop or establish a mutex deadlock.
+Four failed jobs remained during that trace.
+
+A later read-only database snapshot showed no retained originals and only revoked jobs.
+Two disabled reasons identified a closed database error and a legacy project identifier mismatch.
+The failed job errors were no longer available after retirement.
+We created a private snapshot before inspection. We did not modify the owner's database or service.
+
+The correction changes these behaviors:
+
+- Required failed jobs stop preparation with `COMPACTION_FAILED`, rather than repeated readiness polling.
+- A missing prefix without a producer reports `MEMORY_STALLED` and retains originals.
+- Reconciliation drains recovered jobs before admitting the next historical turn.
+- Host transport and database shutdown errors retain originals as operational failures.
+- Exact legacy shutdown-disable records can recover through fresh host and permission checks.
+- Legacy `global` project metadata can change only within the verified original automatic scope and native location.
+- Real permission denials and unverified scope changes remain blocked.
+- Diagnostics include prefix boundaries, failed job categories, and hashed scope mismatches without payloads.
+
+The crash test exposed another stall: an unexpired claim survived its worker's death.
+Schema version 2 records claim owners and fences confirmed dead-process jobs before reclaiming them.
+Live process claims and unknown legacy owners remain protected.
+Deterministic tests kill a child worker and check recovery before lease expiry without stealing a live peer's claim.
+
+The first packed regression run still failed after restart.
+Its trace showed a pending job that reconciliation never drained before the next historical admission.
+The drain-before-admission correction resolved that reproduced loop in the subsequent packed run.
+The native legacy-project test seeds old adapter metadata. It does not claim to reproduce a native project identifier change.
+
+`bun run check` passed TypeScript checks and 81 tests with 11,825 assertions.
+The corrected packed-plugin run passed 23 lifecycle groups and 18 settings and recovery groups.
+The private test directories were:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-9dKG2s
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-By1Nlf
+```
+
+A separate repetition passed all 18 settings and recovery groups in `optchat-integration-doduF1`.
+
+These tests used loopback model fixtures. They made no billable provider calls.
+The owner's next trace must confirm recovery in the affected real session.
+The adapter cannot recreate previously deleted originals unless authorized host history or retained checkpoints still contain them.

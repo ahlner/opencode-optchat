@@ -2,6 +2,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { strict as assert } from "node:assert";
+import { Store } from "../src/storage/store.ts";
 
 // Real pinned OpenCode service; only the model is replaced by a loopback test sink.
 const root = await mkdtemp(join(process.env.TMPDIR ?? "/private/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/opencode", "optchat-integration-"));
@@ -50,9 +51,13 @@ const gitPackage = process.env.OPTCHAT_GIT_PACKAGE;
 if (gitPackage) console.log(`Test Git package: ${gitPackage}`);
 await Bun.write(join(root, "project/plugin/index.ts"), `
 import { Plugin } from "@opencode/plugin";
+import { existsSync } from "node:fs";
 ${gitPackage ? "" : `import memory from ${JSON.stringify(pluginPath)};`}
 export default Plugin.define({ id: "optchat.integration", async setup(ctx) {
-  ${gitPackage ? "const cleanup = undefined;" : "const cleanup = await memory.setup(ctx);"}
+  ${managedSettings ? `await Bun.write(${JSON.stringify(join(root, "native-location.json"))}, JSON.stringify({ project: ctx.location.project, directory: ctx.location.directory }));` : ""}
+  ${managedSettings ? `const legacyLocation = { ...ctx.location, project: { ...ctx.location.project, id: "global" } };
+  const runtime = existsSync(${JSON.stringify(join(root, "project-discovered.marker"))}) ? ctx : new Proxy(ctx, { get: (target, key) => key === "location" ? legacyLocation : Reflect.get(target, key) });` : "const runtime = ctx;"}
+  ${gitPackage ? "const cleanup = undefined;" : "const cleanup = await memory.setup(runtime);"}
   await ctx.tool.transform(editor => editor.add({ name: "fixture_echo", options: { codemode: false }, description: "Protocol fixture", input: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false }, execute: async i => ({ content: i.text }) }));
   return cleanup;
 } });`);
@@ -66,13 +71,15 @@ const git = async (args: string[]) => {
   const task = Bun.spawn(["git", ...args], { cwd: join(root, "project"), stdout: "pipe", stderr: "pipe" });
   const [exit, error] = await Promise.all([task.exited, new Response(task.stderr).text()]); assert.equal(exit, 0, error);
 };
-await git(["-c", "init.defaultBranch=main", "init"]);
 await Bun.write(join(root, "project/fixture.txt"), "Private integration fixture.\n");
-await git(["add", "fixture.txt"]);
-await git(["-c", "user.name=OptChat Fixture", "-c", "user.email=fixture@invalid", "-c", "commit.gpgsign=false", "commit", "-m", "Private test fixture"]);
 const worktree = join(root, "worktree");
-await git(["worktree", "add", "--detach", worktree]);
-await Bun.write(join(worktree, "opencode.json"), await Bun.file(join(root, "project/opencode.json")).text());
+if (!managedSettings) {
+  await git(["-c", "init.defaultBranch=main", "init"]);
+  await git(["add", "fixture.txt"]);
+  await git(["-c", "user.name=OptChat Fixture", "-c", "user.email=fixture@invalid", "-c", "commit.gpgsign=false", "commit", "-m", "Private test fixture"]);
+  await git(["worktree", "add", "--detach", worktree]);
+  await Bun.write(join(worktree, "opencode.json"), await Bun.file(join(root, "project/opencode.json")).text());
+}
 const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const port = reservation.port; reservation.stop(true);
 const env = { PATH: process.env.PATH, HOME: root, TMPDIR: process.env.TMPDIR, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_STATE_HOME: join(root, "state") };
 const start = () => Bun.spawn(["opencode", "serve", "--hostname", "127.0.0.1", "--port", String(port)], { cwd: join(root, "project"), env, stdout: Bun.file(join(root, "service.stdout")), stderr: Bun.file(join(root, "service.stderr")) });
@@ -171,18 +178,55 @@ try {
      await until(async () => (await settingsCall("status")).jobs.running === 0, "cancelled jobs release their claims", 5000);
      const stoppedHealth = await settingsCall("status");
      assert(stoppedHealth.jobs.pending > 0); assert.equal(stoppedHealth.jobs.failed, 0);
-     assert.equal((await settingsCall("retry")).originals, stoppedHealth.originals, "Settings RPC is available after the timeout without deleting originals");
+      assert.equal((await settingsCall("retry")).originals, stoppedHealth.originals, "Settings RPC is available after the timeout without deleting originals");
+      // Reproduce an already failed dependency in this private fixture database.
+      const fixtureStore = new Store(dbPath);
+      let failedJobId: string;
+      try {
+        const row = fixtureStore.db.query("SELECT id FROM jobs WHERE status='pending' AND json_extract(input,'$.type')='leaf' LIMIT 1").get() as { id: string } | null;
+        assert(row, "A cancelled leaf remains available for recovery"); failedJobId = row.id;
+        assert.equal(fixtureStore.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND status='pending'").run("Compactor did not produce a nonempty summary within 512 UTF-8 bytes PRIVATE_BROKEN_JOB_PAYLOAD", row.id).changes, 1);
+      } finally { fixtureStore.close(); }
+      const failedStart = performance.now(), beforeFailed = requests.length;
+      await api("POST", `/api/session/${b.id}/prompt`, { text: "FAILED_REQUIRED_JOB_CURRENT" });
+      await until(async () => (await Bun.file(`${dbPath}.diagnostics.ndjson`).text()).trim().split("\n").some(line => {
+        const row = JSON.parse(line); return row.event === "phase.end" && row.phase === "primary.context" && row.sessionId === b.id && row.errorCode === "COMPACTION_FAILED";
+      }), "the new primary hook reports its failed dependency", 5000);
+      await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${b.id}`)).outcome), "failed dependency stops instead of polling", 5000);
+      assert(performance.now() - failedStart < 5000);
+      assert(!requests.slice(beforeFailed).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("FAILED_REQUIRED_JOB_CURRENT"))));
+      const failedHealth = await settingsCall("status"); assert(failedHealth.jobs.failed >= 1); assert(failedHealth.originals >= stoppedHealth.originals);
+      assert.equal((await settingsCall("retry")).jobs.failed, 0, "Explicit retry repairs failed dependencies without deleting originals");
      holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
-     await api("POST", `/api/session/${c.id}/prompt`, { text: "RESUME_AFTER_SLOW_HISTORY" });
-     await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "primary admission resumes after cancellation");
+      await api("POST", `/api/session/${c.id}/prompt`, { text: "RESUME_AFTER_SLOW_HISTORY" });
+      await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "primary admission resumes after cancellation");
+      await until(() => (db!.query("SELECT count(*) n FROM sources WHERE session=? AND value LIKE '%RESUME_AFTER_SLOW_HISTORY%'").get(c.id) as { n: number }).n > 0, "resumed originals are sealed before project discovery");
+      const originalAIds = db!.query("SELECT id FROM sources WHERE session=? ORDER BY seq").all(a.id) as { id: string }[];
+      const nativeProject = (await api("GET", `/api/session/${a.id}`)).projectID;
+      assert.notEqual(nativeProject, "global");
+      // Seed the legacy adapter bookkeeping observed in the real incident. Originals stay immutable.
+      const legacyStore = new Store(dbPath);
+      try { const stored = legacyStore.get<any>("sessions", a.id); stored.projectId = "global"; legacyStore.set("sessions", a.id, stored); }
+      finally { legacyStore.close(); }
+      await Bun.write(join(root, "project-discovered.marker"), "Use the native project metadata on restart\n");
+      proc.kill("SIGKILL"); await proc.exited; proc = start(); await ready();
+      assert.equal((await settingsCall("read")).scopeId, settings.scopeId, "Project discovery preserves the configured trust scope");
+      assert.equal((await api("GET", `/api/session/${a.id}`)).projectID, nativeProject);
+      const beforeDiscovery = requests.length;
+      await api("POST", `/api/session/${a.id}/prompt`, { text: "AFTER_PROJECT_DISCOVERY_CURRENT" });
+      await until(() => requests.slice(beforeDiscovery).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("AFTER_PROJECT_DISCOVERY_CURRENT"))), "verified project discovery allows a primary request");
+      await until(async () => (await api("GET", `/api/session/${a.id}`)).outcome === "succeeded", "project discovery continuation succeeds");
+      for (const row of originalAIds) assert(db!.query("SELECT id FROM sources WHERE id=?").get(row.id), "Discovery retains original IDs and provenance");
       assert.equal((db!.query("SELECT count(*) AS n FROM entities WHERE bucket='sessions' AND json_extract(value,'$.disabled') IS NOT NULL").get() as { n: number }).n, 0);
       const diagnosticText = await Bun.file(`${dbPath}.diagnostics.ndjson`).text();
       const diagnosticRows = diagnosticText.trim().split("\n").map(line => JSON.parse(line));
       assert(diagnosticRows.some(row => row.event === "job.release"), "Cancelled claims are visible in diagnostics");
       assert(diagnosticRows.some(row => row.phase === "compactor.generate" && row.event === "phase.start"), "Actual model waits have diagnostic phases");
-      assert(diagnosticRows.some(row => row.phase === "primary.context" && row.errorCode === "MEMORY_NOT_READY"), "Admission failures have sanitized diagnostic codes");
-      assert(!/PAIR_OK|A_DECISION|BLOCKED_BY_SLOW_HISTORY|RESUME_AFTER_SLOW_HISTORY/.test(diagnosticText), "Diagnostics exclude original and model payloads");
-      console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "slow-history deadline", "cancelled claims and available settings", "admission resumes without retirement"], modelRequests: requests.length }, null, 2));
+       assert(diagnosticRows.some(row => row.phase === "primary.context" && row.errorCode === "MEMORY_NOT_READY"), "Admission failures have sanitized diagnostic codes");
+       assert(diagnosticRows.some(row => row.event === "readiness.failed_job" && row.jobId === failedJobId && row.errorCode === "SUMMARY_SIZE"), "The blocking failed dependency is identified without its raw error");
+       assert(diagnosticRows.some(row => row.event === "scope.discovery_migrated" && row.sessionId === a.id), "Native discovery uses the verified migration path");
+       assert(!/PAIR_OK|A_DECISION|BLOCKED_BY_SLOW_HISTORY|RESUME_AFTER_SLOW_HISTORY|PRIVATE_BROKEN_JOB_PAYLOAD|FAILED_REQUIRED_JOB_CURRENT|AFTER_PROJECT_DISCOVERY_CURRENT/.test(diagnosticText), "Diagnostics exclude original and model payloads");
+       console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "slow-history deadline", "cancelled claims and available settings", "failed dependency stops without polling", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });

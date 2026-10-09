@@ -5,6 +5,75 @@ import plugin from "../src/adapters/opencode/plugin.ts";
 import { Store, Engine } from "../src/index.ts";
 import { extract } from "../src/adapters/opencode/transcript.ts";
 
+test("cancelled chunk work preserves durable progress and cannot release another worker's fence", async () => {
+  const store = new Store(), controller = new AbortController();
+  let calls = 0, finishLate!: (value: any) => void;
+  const pending = new Promise<any>(resolve => { finishLate = resolve; });
+  const engine = new Engine(store, { summarize: async () => ++calls === 1 ? { text: "Durable chunk.", model: "fixture", promptVersion: "fixture", fallback: false } : pending }, { chunkBytes: 2048 });
+  try {
+    engine.register("chunk-session", "scope", "project"); engine.admit("chunk-session", "past");
+    engine.append({ sessionId: "chunk-session", generation: 0, projectId: "project", eventKey: "chunk", turnId: "past", kind: "tool_result", timestamp: "2026-10-09T00:00:00Z", payload: "COMPLETE_ORIGINAL".repeat(1000) });
+    engine.finish("chunk-session", "past", "completed");
+    const work = engine.workOne(controller.signal);
+    while (calls < 2) await Bun.sleep(1);
+    const reason = new Error("Operator cancelled preparation"); controller.abort(reason);
+    await expect(work).rejects.toBe(reason);
+    expect(store.db.query("SELECT status FROM jobs").all()).toEqual([{ status: "pending" }]);
+    expect(store.db.query("SELECT id FROM nodes").all()).toHaveLength(1);
+    const replacement = store.claim()!;
+    expect(store.release({ ...replacement, fence: replacement.fence - 1 })).toBe(false);
+    expect(store.owns(replacement)).toBe(true);
+    finishLate({ text: "Cancelled chunk.", model: "fixture", promptVersion: "fixture", fallback: false }); await Bun.sleep(5);
+    expect(store.db.query("SELECT id FROM nodes").all()).toHaveLength(1);
+    expect(engine.sources("chunk-session", 0)[0]!.payload).toBe("COMPLETE_ORIGINAL".repeat(1000));
+    expect(store.release(replacement)).toBe(true);
+    await new Engine(store, undefined, { chunkBytes: 2048 }).drain(); expect(store.all("publications")).toHaveLength(1);
+  } finally { finishLate?.({ text: "Ignored.", model: "fixture", promptVersion: "fixture", fallback: false }); store.close(); }
+});
+
+test("cold history cancellation releases settings and discards a provider result that arrives after the deadline", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-cold-cancel-"));
+  const database = join(root, "memory.sqlite"), hooks: Record<string, any> = {};
+  let rpc: Record<string, any> = {}, calls = 0, fast = false, signal: AbortSignal | undefined;
+  let finishLate!: (value: { text: string }) => void;
+  const late = new Promise<{ text: string }>(resolve => { finishLate = resolve; });
+  const history = Array.from({ length: 24 }, (_, i) => [
+    { id: `past-${i}`, type: "user", time: { created: i * 2 + 1 }, text: `HISTORICAL_EVIDENCE_${i}` },
+    { id: `idle-${i}`, type: "idle", time: { created: i * 2 + 2 }, outcome: "succeeded" },
+  ]).flat();
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root, project: { id: "stable" } },
+      options: { database, scopeId: "cold", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 80 },
+      storage: { get: async () => undefined, set: async () => {} }, rpc: { register: async (_: any, handlers: any) => { rpc = handlers; return { dispose: async () => {} }; } },
+      session: { hook: async (name: string, callback: any) => { hooks[name] = callback; return { dispose: async () => {} }; },
+        get: async () => ({ projectID: "stable", agent: "build", permissions: [], location: { directory: root } }),
+        context: async () => [...history, { id: "current", type: "user", time: { created: 100 }, text: "CURRENT" }] },
+      agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 131072, output: 1024 } }] }) },
+      generate: { text: async (_: any, options: any) => { calls++; signal = options.signal; return fast ? { text: "Historical evidence." } : late; } },
+      tool: { transform: async (callback: any) => { callback({ add() {} }); return { dispose: async () => {} }; } }, event: { subscribe: async function* () {} },
+    } as any) as typeof cleanup;
+    const request = { sessionID: "cold-session", agent: "build", model: { providerID: "fixture", id: "fixture" }, options: {}, system: [], tools: {}, messages: [{ id: "current", role: "user", content: "CURRENT" }] };
+    const system = request.system, messages = request.messages, started = performance.now();
+    await expect(hooks.context(request)).rejects.toThrow("MEMORY_NOT_READY");
+    expect(performance.now() - started).toBeLessThan(500); expect(signal?.aborted).toBe(true); expect(calls).toBe(1);
+    expect(request.system).toBe(system); expect(request.messages).toBe(messages);
+    // The native settings guard must not retain a request after its deadline.
+    await rpc.retry({});
+    const store = new Store(database);
+    try {
+      expect(store.db.query("SELECT status FROM jobs").all()).toEqual([{ status: "pending" }]);
+      expect(new Engine(store).sources("cold-session", 0)).toHaveLength(1);
+      finishLate({ text: "LATE_RESULT_MUST_NOT_COMMIT" }); await Bun.sleep(10);
+      expect(store.db.query("SELECT id FROM nodes").all()).toEqual([]); expect(calls).toBe(1);
+      fast = true; await hooks.context(request);
+      expect(new Engine(store).sources("cold-session", 0)).toHaveLength(24);
+      expect(store.all("publications")).toHaveLength(24);
+      expect(JSON.stringify(store.db.query("SELECT value FROM nodes").all())).not.toContain("LATE_RESULT_MUST_NOT_COMMIT");
+    } finally { store.close(); }
+  } finally { finishLate({ text: "Ignored late result." }); await cleanup?.(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("server-wide terminal events do not import unrelated Locations into a configured scope", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-event-scope-")); let reads = 0;
   try {

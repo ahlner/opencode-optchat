@@ -13,6 +13,7 @@ export declare class Store {
     owns(job: Job): boolean;
     renew(job: Job, leaseMs: number, now?: number): boolean;
     recoverLease(job: Job, leaseMs: number, now?: number, maxRunning?: number): boolean;
+    release(job: Job): boolean;
     fail(job: Job, error: unknown): void;
     close(): void;
 }

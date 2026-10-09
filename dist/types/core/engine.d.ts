@@ -38,8 +38,8 @@ export declare class Engine {
     private schedulePublications;
     private writeNode;
     private summarizeFull;
-    workOne(): Promise<boolean>;
-    drain(max?: number): Promise<void>;
+    workOne(signal?: AbortSignal): Promise<boolean>;
+    drain(max?: number, signal?: AbortSignal): Promise<void>;
     retryFailed(): void;
     markInherited(sessionId: string, id: string): void;
     projection(view: View, budget: number): Node[];

@@ -1,4 +1,31 @@
 // @bun
+// src/core/abort.ts
+function abortable(run, signal) {
+  if (!signal)
+    return run();
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return run();
+    }).then((value) => {
+      signal.removeEventListener("abort", abort);
+      resolve(value);
+    }, (error) => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+  });
+}
+
 // src/core/types.ts
 class MemoryError extends Error {
   code;
@@ -40,14 +67,14 @@ class ModelSummarizer {
     this.retries = retries;
     insist(Number.isSafeInteger(inputBytes) && inputBytes >= 2048 && retries > 0 && retries <= 10, "CONFIG", "Invalid compactor bounds");
   }
-  async summarize(input) {
+  async summarize(input, signal) {
     insist(bytes(input) <= this.inputBytes, "SUMMARY_INPUT_TOO_LARGE", "Chunk the full input before summarization");
     let measured = "";
     for (let attempt = 0;attempt < this.retries; attempt++) {
-      const text = (await this.generate(`${summaryInstruction}
+      const text = (await abortable(() => this.generate(`${summaryInstruction}
 ${measured}
 UNTRUSTED_JSON_DATA:
-${JSON.stringify(input)}`)).trim();
+${JSON.stringify(input)}`, signal), signal)).trim();
       if (text && bytes(text) <= 512)
         return { text, model: this.model, promptVersion: "optchat-3", fallback: false };
       measured = `Previous response was ${bytes(text)} UTF-8 bytes and was rejected. Aim for at most ${Math.max(100, 280 - (attempt + 1) * 80)} UTF-8 bytes on this attempt. Use much fewer words; preserve material outcomes and useful exact identifiers. Do not explain these instructions.`;
@@ -307,7 +334,7 @@ class Engine {
     }
     this.schedulePublications();
   }
-  async summarizeFull(text, job) {
+  async summarizeFull(text, job, signal) {
     let inputs = [], depth = 0, fallback = false;
     while (bytes(text) > this.options.chunkBytes) {
       const parts = chunks(text, this.options.chunkBytes), summaries = [], ids = [];
@@ -319,7 +346,8 @@ class Engine {
           fallback ||= existing.fallback;
           continue;
         }
-        const result = await this.summarizer.summarize(parts[i]);
+        signal?.throwIfAborted();
+        const result = await abortable(() => this.summarizer.summarize(parts[i], signal), signal);
         fallback ||= result.fallback;
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
@@ -334,10 +362,11 @@ class Engine {
       inputs = ids;
       depth++;
     }
-    const result = await this.summarizer.summarize(text);
+    const result = await abortable(() => this.summarizer.summarize(text, signal), signal);
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
-  async workOne() {
+  async workOne(signal) {
+    signal?.throwIfAborted();
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
@@ -373,7 +402,8 @@ class Engine {
         children = input.cover;
         text = JSON.stringify({ sessionId: turn.sessionId, generation: turn.generation, turnId: turn.id, outcome: turn.outcome, completedAt: turn.completedAt, historicalEvidence: children.map((id) => this.node(id).text) });
       }
-      const result = await this.summarizeFull(text, job);
+      const result = await this.summarizeFull(text, job, signal);
+      signal?.throwIfAborted();
       this.store.transaction(() => {
         insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
@@ -401,6 +431,10 @@ class Engine {
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
     } catch (error) {
+      if (signal?.aborted) {
+        this.store.release(job);
+        throw signal.reason;
+      }
       if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
         this.store.fail(job, error);
         throw error;
@@ -410,9 +444,9 @@ class Engine {
     }
     return true;
   }
-  async drain(max = 1e5) {
+  async drain(max = 1e5, signal) {
     for (let i = 0;i < max; i++)
-      if (!await this.workOne())
+      if (!await this.workOne(signal))
         return;
     throw new Error("Job drain exceeded its bound");
   }
@@ -623,6 +657,9 @@ class Store {
   recoverLease(job, leaseMs, now = Date.now(), maxRunning = Number.MAX_SAFE_INTEGER) {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND (SELECT count(*) FROM jobs WHERE status='running' AND leaseUntil>? AND id<>?)<?").run(now + leaseMs, job.id, job.fence, now, job.id, maxRunning).changes === 1;
   }
+  release(job) {
+    return this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,error=NULL WHERE id=? AND fence=? AND status='running'").run(job.id, job.fence).changes === 1;
+  }
   fail(job, error) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }
@@ -784,4 +821,4 @@ export {
   turnKey
 };
 
-//# debugId=78179D97A6295E7F64756E2164756E21
+//# debugId=184CC131168777DC64756E2164756E21

@@ -69,6 +69,9 @@ export class Store {
   recoverLease(job: Job, leaseMs: number, now = Date.now(), maxRunning = Number.MAX_SAFE_INTEGER): boolean {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND (SELECT count(*) FROM jobs WHERE status='running' AND leaseUntil>? AND id<>?)<?").run(now + leaseMs, job.id, job.fence, now, job.id, maxRunning).changes === 1;
   }
+  release(job: Job) {
+    return this.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,error=NULL WHERE id=? AND fence=? AND status='running'").run(job.id, job.fence).changes === 1;
+  }
   fail(job: Job, error: unknown) {
     this.db.query("UPDATE jobs SET status='failed',error=? WHERE id=? AND fence=? AND status='running'").run(String(error), job.id, job.fence);
   }

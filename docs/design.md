@@ -107,6 +107,17 @@ Existing failed jobs still require an operator retry.
 
 `MEMORY_NOT_READY` means a required complete prefix or suitable durable projection is missing.
 The adapter waits at most `waitMs`.
+
+The same deadline limits serialized preparation, model calls, retry delays, and host metadata waits.
+An expired primary request cannot execute its queued preparation later.
+Cancellation returns only the worker's matching claim to the pending queue and increments its fence.
+Intermediate durable summaries remain available for a later attempt.
+The worker discards late provider responses even if the provider ignores cancellation.
+
+These bounds do not remove historical reconciliation from primary admission.
+Large-session initialization still needs a separate controlled preparation workflow.
+Provider-side work and charges can continue after an abort signal.
+
 `ACTIVE_TURN_TOO_LARGE` stops the request explicitly.
 The adapter does not yet create transparent checkpoints inside active turns.
 

@@ -7,11 +7,14 @@ import { strict as assert } from "node:assert";
 const root = await mkdtemp(join(process.env.TMPDIR ?? "/private/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/opencode", "optchat-integration-"));
 for (const dir of ["config", "data", "cache", "state", "project", "project/plugin"]) await mkdir(join(root, dir));
 const requests: any[] = [];
+let holdSummaries = false;
+const heldSummaries = new Set<() => void>();
 const plain = (text: string) => ({ content: text });
 const call = (id: string, name: string, input: unknown) => ({ tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(input) } }] });
 const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   const body = await req.json() as any; requests.push(body);
   const messages = body.messages as any[], all = JSON.stringify(messages);
+  if (holdSummaries && all.includes("UNTRUSTED_JSON_DATA")) await new Promise<void>(resolve => heldSummaries.add(resolve));
   const tools = messages.filter(m => m.role === "tool");
   if (body.tools && messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("FAIL_CURRENT"))) return Response.json({ error: { message: "Fixture rejects this attempt", type: "invalid_request_error", code: "fixture_failure" } }, { status: 400 });
   if (body.tools && messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("INTERRUPT_CURRENT"))) {
@@ -154,9 +157,26 @@ try {
     await settingsCall("write", { ...settings, enabled: false });
     assert.equal((await settingsCall("read")).enabled, false);
     assert.equal(publications().length, count, "Disabling does not delete retained originals or publications");
-    await settingsCall("write", { ...settings, memoryBytes: 12000 });
-    assert.equal((await settingsCall("read")).memoryBytes, 12000);
-     console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC"], modelRequests: requests.length }, null, 2));
+     await settingsCall("write", { ...settings, memoryBytes: 12000 });
+     assert.equal((await settingsCall("read")).memoryBytes, 12000);
+     await settingsCall("write", { ...settings, memoryBytes: 12000, waitMs: 500 });
+     holdSummaries = true;
+     await api("POST", `/api/session/${a.id}/prompt`, { text: "SLOW_HISTORY_SEED" });
+     await until(() => heldSummaries.size > 0, "slow terminal compaction begins");
+     const started = performance.now(), beforeBlocked = requests.length;
+     await api("POST", `/api/session/${b.id}/prompt`, { text: "BLOCKED_BY_SLOW_HISTORY" });
+     await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${b.id}`)).outcome), "bounded slow-history stop", 5000);
+     assert(performance.now() - started < 5000, "Slow preparation stops rather than retaining the primary hook indefinitely");
+     assert(!requests.slice(beforeBlocked).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("BLOCKED_BY_SLOW_HISTORY"))), "No primary request with incomplete history is dispatched");
+     await until(async () => (await settingsCall("status")).jobs.running === 0, "cancelled jobs release their claims", 5000);
+     const stoppedHealth = await settingsCall("status");
+     assert(stoppedHealth.jobs.pending > 0); assert.equal(stoppedHealth.jobs.failed, 0);
+     assert.equal((await settingsCall("retry")).originals, stoppedHealth.originals, "Settings RPC is available after the timeout without deleting originals");
+     holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
+     await api("POST", `/api/session/${c.id}/prompt`, { text: "RESUME_AFTER_SLOW_HISTORY" });
+     await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "primary admission resumes after cancellation");
+     assert.equal((db!.query("SELECT count(*) AS n FROM entities WHERE bucket='sessions' AND json_extract(value,'$.disabled') IS NOT NULL").get() as { n: number }).n, 0);
+      console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "slow-history deadline", "cancelled claims and available settings", "admission resumes without retirement"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });
@@ -296,6 +316,7 @@ try {
 } catch (error) {
   console.error(`Integration artifacts: ${root}`); throw error;
 } finally {
+  for (const release of heldSummaries) release();
   await Bun.write(join(root, "requests.json"), JSON.stringify(requests, null, 2));
   db?.close(); proc.kill("SIGTERM"); await proc.exited; sink.stop(true);
 }

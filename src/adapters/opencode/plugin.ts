@@ -7,6 +7,7 @@ import { extract, fingerprint, contentFingerprint, liveSuffix, retainedMessage, 
 import { memoryPolicy } from "./policy.ts";
 import { setupSettings } from "./settings.ts";
 import { compactorRequest } from "./compactor-request.ts";
+import { abortable } from "../../core/abort.ts";
 
 interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
@@ -33,21 +34,30 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   for (const session of store.all<Session>("sessions")) if (session.disabled && falseReadinessDisable.test(session.disabled)) {
     delete session.disabled; store.set("sessions", session.id, session);
   }
-  const compactor = config.fakeSummarizer ? new FakeSummarizer() : new ModelSummarizer(async prompt => {
-    const models = await ctx.model.list({});
+  const compactor = config.fakeSummarizer ? new FakeSummarizer() : new ModelSummarizer(async (prompt, signal) => {
+    const models = await abortable(() => ctx.model.list({}), signal);
     const model = models.data.find(m => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
-    return compactorRequest(async signal => (await ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal })).text, waitMs);
+    return compactorRequest(async signal => (await ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal })).text, waitMs, undefined, signal);
   }, key(config.compactorModel));
   const engine = new Engine(store, compactor, { maxRunningJobs: 1 }), retrieval = new Retrieval(engine);
-  let tail: Promise<unknown> = Promise.resolve(), stopped = false;
-  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
-    const result = tail.then(fn); tail = result.catch(() => {}); return result;
+  let tail: Promise<unknown> = Promise.resolve(), stopped = false, operationSignal: AbortSignal | undefined;
+  const operation = <T>(fn: () => Promise<T>) => abortable(fn, operationSignal);
+  const serial = <T>(fn: () => Promise<T>, parent?: AbortSignal): Promise<T> => {
+    const result = tail.then(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
+      operationSignal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
+      try { operationSignal.throwIfAborted(); return await fn(); }
+      finally { clearTimeout(timer); operationSignal = undefined; }
+    });
+    tail = result.catch(() => {});
+    return parent ? abortable(() => result, parent) : result;
   };
   const compact = async () => {
-    try { await engine.drain(); }
-    catch (error) { throw new MemoryError("COMPACTION_FAILED", String(error)); }
+    try { await engine.drain(100000, operationSignal); }
+    catch (error) { if (operationSignal?.aborted) throw operationSignal.reason; throw new MemoryError("COMPACTION_FAILED", String(error)); }
   };
   const disable = (id: string, reason: string) => {
     let s = store.get<Session>("sessions", id);
@@ -65,17 +75,17 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     disable(id, reason);
   };
   const reconcile = async (sessionID: Parameters<PluginContext["session"]["context"]>[0]["sessionID"], requestAgent?: string) => {
-    const info = await ctx.session.get({ sessionID });
+    const info = await operation(() => ctx.session.get({ sessionID }));
     const s = engine.register(sessionID, config.scopeId, config.projectId ?? info.projectID, info.parentID);
     const agentId = requestAgent ?? info.agent ?? store.get<Journal>("adapter", sessionID)?.agentId ?? "build";
     const deadline = Date.now() + waitMs;
     let agent: Awaited<ReturnType<PluginContext["agent"]["get"]>>;
     for (;;) {
-      try { agent = await ctx.agent.get({ agentID: agentId as Parameters<PluginContext["agent"]["get"]>[0]["agentID"], location: { directory: info.location.directory } }); break; }
+      try { agent = await operation(() => ctx.agent.get({ agentID: agentId as Parameters<PluginContext["agent"]["get"]>[0]["agentID"], location: { directory: info.location.directory } })); break; }
       catch (error) {
         // A moved Location can emit its event before native agents finish loading.
         if (!String(error).includes("Agent not found") || Date.now() >= deadline) throw error;
-        await Bun.sleep(50);
+        await operation(() => Bun.sleep(50));
       }
     }
     const policy = memoryPolicy([...agent.data.permissions, ...(info.permissions ?? [])], config.scopeId);
@@ -99,10 +109,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (!policy.read) s.disabled = "Memory read permission was revoked";
     store.set("sessions", sessionID, s); store.set("policies", sessionID, policy);
     });
-    if (interruptActive) await ctx.session.interrupt({ sessionID });
+    if (interruptActive) await operation(() => ctx.session.interrupt({ sessionID }));
     engine.session(sessionID);
     insist(!info.revert, "REVERT_PENDING", "Commit or clear the staged revert before admitting another turn");
-    let raw = await ctx.session.context({ sessionID }) as unknown as RawMessage[];
+    let raw = await operation(() => ctx.session.context({ sessionID })) as unknown as RawMessage[];
     const marker = raw.findLast(m => m.type === "compaction" && m.status === "completed" && typeof (m.metadata as any)?.optchatCheckpoint === "string");
     const markerId = marker && (marker.metadata as any).optchatCheckpoint as string | undefined;
     const alias = markerId && store.get<{ checkpointId: string }>("checkpointAliases", key(sessionID, markerId));
@@ -200,7 +210,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   };
   await ctx.session.hook("context", async event => {
     const deadline = Date.now() + waitMs;
-    const pending = serial(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
+    try {
+    const result = await serial(async () => {
       for (;;) {
         try {
           insist(Date.now() < deadline, "MEMORY_NOT_READY", "Bounded admission wait expired");
@@ -211,7 +224,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           const id = journal.activeId ?? first.id;
           const turn = engine.admit(event.sessionID, id); journal.activeId = id; store.set("adapter", event.sessionID, journal);
           const live = liveSuffix(event.messages, new Set(active.map(m => m.id)));
-          const models = await ctx.model.list({});
+          const models = await operation(() => ctx.model.list({}));
           const model = models.data.find(m => m.id === event.model.id && m.providerID === event.model.providerID);
           insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Cannot assemble context without model context/output limits");
           const outputTokens = typeof event.options.maxTokens === "number" ? event.options.maxTokens : model.limit.output;
@@ -221,15 +234,14 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           if (previousError && ["MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code)) store.remove("adapterErrors", event.sessionID);
           return result;
         } catch (error) {
-          if (!(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline) throw error;
+          if (operationSignal?.aborted || !(error instanceof MemoryError) || error.code !== "MEMORY_NOT_READY" || Date.now() >= deadline) throw error;
           // A different SQLite worker can be building the required durable cover.
-          await Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+          await operation(() => Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now()))));
         }
       }
-    });
-    let timer: ReturnType<typeof setTimeout>;
-    const result = await Promise.race([pending, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("MEMORY_NOT_READY: bounded admission wait expired")), waitMs); })]).finally(() => clearTimeout(timer!));
+    }, controller.signal);
     event.system = result.system as typeof event.system; event.messages = result.messages;
+    } finally { clearTimeout(timer); }
   });
   await ctx.session.hook("compaction", async event => {
     await serial(async () => {

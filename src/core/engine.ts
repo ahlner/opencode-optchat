@@ -1,4 +1,5 @@
 import { Store } from "../storage/store.ts";
+import { abortable } from "./abort.ts";
 import { chunks, FakeSummarizer, type Summarizer } from "../compactor/summarizer.ts";
 import { MemoryError, bytes, hash, insist, key, sessionTree, sharedTree, sourceKey, turnKey, type Job, type Node, type Outcome, type Publication, type Session, type Snapshot, type SourceInput, type SourceRecord, type Turn, type View } from "./types.ts";
 import { rangeCover, validateCover } from "./tree.ts";
@@ -141,24 +142,26 @@ export class Engine {
     }
     this.schedulePublications();
   }
-  private async summarizeFull(text: string, job: Job): Promise<{ text: string; model: string; promptVersion: string; fallback: boolean; inputs: string[] }> {
+  private async summarizeFull(text: string, job: Job, signal?: AbortSignal): Promise<{ text: string; model: string; promptVersion: string; fallback: boolean; inputs: string[] }> {
     let inputs: string[] = [], depth = 0, fallback = false;
     while (bytes(text) > this.options.chunkBytes) {
       const parts = chunks(text, this.options.chunkBytes), summaries: string[] = [], ids: string[] = [];
       for (let i = 0; i < parts.length; i++) {
         const tree = key("chunk", job.id, depth, i), existing = this.findNode(tree, 0, 1);
         if (existing) { summaries.push(existing.text); ids.push(existing.id); fallback ||= existing.fallback; continue; }
-        const result = await this.summarizer.summarize(parts[i]); fallback ||= result.fallback;
+        signal?.throwIfAborted();
+        const result = await abortable(() => this.summarizer.summarize(parts[i]!, signal), signal); fallback ||= result.fallback;
         const n: Node = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
         summaries.push(n.text); ids.push(n.id);
       }
       text = summaries.join("\n"); inputs = ids; depth++;
     }
-    const result = await this.summarizer.summarize(text);
+    const result = await abortable(() => this.summarizer.summarize(text, signal), signal);
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
-  async workOne(): Promise<boolean> {
+  async workOne(signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job) return false;
     const renewal = setInterval(() => {
@@ -181,7 +184,8 @@ export class Engine {
         tree = ""; start = 0; count = 1; children = input.cover;
         text = JSON.stringify({ sessionId: turn.sessionId, generation: turn.generation, turnId: turn.id, outcome: turn.outcome, completedAt: turn.completedAt, historicalEvidence: children.map(id => this.node(id).text) });
       }
-      const result = await this.summarizeFull(text, job);
+      const result = await this.summarizeFull(text, job, signal);
+      signal?.throwIfAborted();
       this.store.transaction(() => {
         insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n: Node = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
@@ -205,13 +209,14 @@ export class Engine {
       });
     } catch (error) {
       // Losing ownership is coordination, not a failed model call. Never fail the replacement job.
+      if (signal?.aborted) { this.store.release(job); throw signal.reason; }
       if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) { this.store.fail(job, error); throw error; }
     }
     finally { clearInterval(renewal); }
     return true;
   }
-  async drain(max = 100000) {
-    for (let i = 0; i < max; i++) if (!await this.workOne()) return;
+  async drain(max = 100000, signal?: AbortSignal) {
+    for (let i = 0; i < max; i++) if (!await this.workOne(signal)) return;
     throw new Error("Job drain exceeded its bound");
   }
   retryFailed() { this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run(); }

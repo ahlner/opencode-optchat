@@ -87,6 +87,19 @@ Startup recovers the exact readiness error that earlier versions incorrectly sto
 Permission revocations and uncertain original mappings remain blocked.
 Recovery cannot recreate originals that neither the host nor a retained checkpoint exposes.
 
+### Existing sessions and preparation limits
+
+Enabling memory in an existing session can require many summary calls before the first primary model request.
+Current reconciliation still processes historical turns before admission.
+The adapter does not yet provide a separate preparation workflow with a model-call budget and progress controls.
+Do not treat installation success or small-session tests as evidence of acceptable large-session startup latency.
+
+The admission deadline now cancels local preparation waits and sends an abort signal to the provider.
+Cancelled jobs return to the pending queue through their matching fences.
+Completed originals and summaries remain stored. Late provider responses cannot commit cancelled results.
+A provider can still charge for an already submitted request despite cancellation.
+The deadline does not guarantee that the archive will fit the memory budget on the next attempt.
+
 ### Explicit configuration
 
 Use explicit options when you need a custom database path or trust scope.

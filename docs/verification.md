@@ -1,5 +1,33 @@
 # Verification
 
+## Admission cancellation after a reported session hang
+
+The operator reported activity without a primary response after enabling the plugin in an existing session.
+Read-only logs showed settings writes rejected with `SETTINGS_BUSY`.
+Source inspection identified a deadline that rejected the caller without cancelling serialized preparation.
+This establishes a code defect, not the complete cause of the operator's individual session failure.
+
+The correction propagates cancellation through host waits, summary calls, chunk processing, and serialized admission.
+Cancelled claims return to the pending queue only if their fence still matches.
+Late results cannot commit. No original or completed summary is deleted.
+The regression fixture includes 24 historical turns and a provider that ignores cancellation.
+It checks bounded failure, unchanged request content, available settings, discarded late results, and successful retry.
+
+Verification completed with the following results:
+
+- `bun run check`: 73 tests, 11,726 assertions, TypeScript checks, and nine original Markdown files passed.
+- Packed public exports and the TypeScript consumer passed.
+- The private host passed 23 lifecycle groups with 275 loopback requests.
+- Managed settings passed 15 groups with 57 loopback requests, including slow preparation cancellation and resumed admission.
+
+Lifecycle diagnostics: `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-0f6yE7`.
+Settings diagnostics: `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-RjYHJr`.
+The tests did not change the operator's service, configuration, sessions, or memory database.
+
+Initial historical reconciliation still runs before primary admission.
+This correction does not establish acceptable large-session startup latency or a bounded total initialization cost.
+Providers can charge for requests already submitted before cancellation.
+
 Review date: 9 October 2026.
 Runtime: Bun 1.4.2.
 Host: OpenCode 2.0.26.

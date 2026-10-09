@@ -1,10 +1,11 @@
+import { abortable } from "../../core/abort.ts";
 // Retry only explicit rate limits. Other failures retain their original error.
 export async function compactorRequest<T>(generate: (signal: AbortSignal) => Promise<T>, waitMs: number,
-  sleep: (ms: number, signal: AbortSignal) => Promise<void> = pause): Promise<T> {
-  const signal = AbortSignal.timeout(waitMs);
+  sleep: (ms: number, signal: AbortSignal) => Promise<void> = pause, parent?: AbortSignal): Promise<T> {
+  const signal = parent ? AbortSignal.any([parent, AbortSignal.timeout(waitMs)]) : AbortSignal.timeout(waitMs);
   for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted();
-    try { return await generate(signal); }
+    try { return await abortable(() => generate(signal), signal); }
     catch (error) {
       const message = String(error);
       if (signal.aborted || attempt >= 3 || !/rate[ -]?limit|too many requests|\b429\b/i.test(message)) throw error;
@@ -12,7 +13,7 @@ export async function compactorRequest<T>(generate: (signal: AbortSignal) => Pro
       const delay = Math.max(1000 * 2 ** attempt, seconds ? Number(seconds[1]) * 1000 : 0);
       // Do not shorten a provider's requested delay to fit the retry bound.
       if (!Number.isFinite(delay) || delay > 30000) throw error;
-      await sleep(delay, signal);
+      await abortable(() => sleep(delay, signal), signal);
     }
   }
 }

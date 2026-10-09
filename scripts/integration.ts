@@ -41,17 +41,19 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   return new Response(chunk({ role: "assistant" }, null) + chunk(delta, null) + chunk({}, delta.tool_calls ? "tool_calls" : "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
 } });
 const dbPath = join(root, "memory.sqlite"), pluginPath = resolve(process.env.OPTCHAT_PLUGIN_ENTRY ?? "dist/adapters/opencode/plugin.js");
+const gitPackage = process.env.OPTCHAT_GIT_PACKAGE;
+if (gitPackage) console.log(`Test Git package: ${gitPackage}`);
 await Bun.write(join(root, "project/plugin/index.ts"), `
 import { Plugin } from "@opencode/plugin";
-import memory from ${JSON.stringify(pluginPath)};
+${gitPackage ? "" : `import memory from ${JSON.stringify(pluginPath)};`}
 export default Plugin.define({ id: "optchat.integration", async setup(ctx) {
-  const cleanup = await memory.setup(ctx);
+  ${gitPackage ? "const cleanup = undefined;" : "const cleanup = await memory.setup(ctx);"}
   await ctx.tool.transform(editor => editor.add({ name: "fixture_echo", options: { codemode: false }, description: "Protocol fixture", input: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false }, execute: async i => ({ content: i.text }) }));
   return cleanup;
 } });`);
 await Bun.write(join(root, "project/plugin/package.json"), JSON.stringify({ name: "optchat-integration", type: "module", exports: "./index.ts" }));
 await Bun.write(join(root, "project/opencode.json"), JSON.stringify({
-  plugins: [{ package: join(root, "project/plugin"), options: { database: dbPath, scopeId: "fixture-user:stable-project", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }], model: "fixture/fixture",
+  plugins: [{ package: gitPackage ?? join(root, "project/plugin"), options: { database: dbPath, scopeId: "fixture-user:stable-project", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }, ...(gitPackage ? [{ package: join(root, "project/plugin") }] : [])], model: "fixture/fixture",
   agents: { memory_denied: { description: "Native agent memory-denial fixture", mode: "primary", permissions: [{ action: "optchat.read", resource: "*", effect: "deny" }] } },
   providers: { fixture: { name: "Loopback fixture", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${sink.port}/v1`, apiKey: "local-fixture" }, models: { fixture: { capabilities: { tools: true }, limit: { context: 131072, output: 1024 } } } } },
 }));

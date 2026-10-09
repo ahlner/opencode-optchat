@@ -7,6 +7,49 @@ The adapter shares summaries of completed, failed, and interrupted turns within 
 **Tests use Bun 1.4.2 and OpenCode 2.0.26. The adapter rejects other host versions.**
 These tests do not certify production use or guarantee correct model answers.
 
+## Installation from Git
+
+OpenCode installs this plugin directly from GitHub.
+You do not need an npm account, a local clone, a build command, or a wrapper package.
+The repository includes the compiled plugin and its type declarations.
+Dependencies can still require package-registry downloads. This project does not publish to npmjs.com.
+
+1. Use OpenCode 2.0.26.
+2. Add the following entry to your project `opencode.jsonc`.
+3. Preserve existing configuration entries.
+4. Replace the database path, scope identifier, and model identifiers.
+5. Open the project in OpenCode.
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "github:ahlner/opencode-optchat#main",
+      "options": {
+        "database": "/ABSOLUTE/PATH/private-directory/memory.sqlite",
+        "scopeId": "USER-ID:STABLE-PROJECT-ID",
+        "compactorModel": { "providerID": "YOUR-PROVIDER", "id": "YOUR-MODEL" },
+        "memoryBytes": 16000,
+        "safetyTokens": 2048,
+        "waitMs": 30000
+      }
+    }
+  ]
+}
+```
+
+OpenCode installs missing Git packages in the background.
+Use a full commit hash instead of `main` when you need a fixed revision.
+An unpinned branch can change. Check updates before you install them.
+
+The CLI also supports `opencode plugin add github:ahlner/opencode-optchat#main`.
+That command adds a global entry without the required memory options.
+Edit that entry to include the options above before you use the plugin.
+Do not add a second project entry for the same plugin.
+
+See [configuration](#configuration) for model, scope, and permission requirements.
+
 ## Features
 
 - SQLite transactions, write-ahead logging (WAL), durable jobs, leases, and fencing.
@@ -43,6 +86,7 @@ bun run check
 bun run test:coverage
 bun run test:integration
 bun run test:package
+bun run test:git
 bun run demo
 ```
 
@@ -60,56 +104,24 @@ These tests do not use paid models.
 
 See [verification](docs/verification.md) for results and limits.
 
-## Load a local plugin
+### Local development and core imports
 
-1. Install the pinned dependencies.
-2. Build the JavaScript files and type declarations.
-3. Create the local package archive.
+Run `bun run build` after source changes.
+Commit the generated `dist` files with their source changes.
+Git installations do not execute build scripts.
+`bun run pack` creates a local archive without registry publication.
 
-```sh
-bun install --frozen-lockfile
-bun run build
-bun run pack
-```
+To test a local checkout, replace the Git package specification with the absolute repository directory.
+Use the same configuration options. You do not need a wrapper package.
+The default package export is the OpenCode plugin.
+Import the standalone memory engine from `opencode-optchat/core`.
+The `opencode-optchat/plugin` entry remains available.
 
-`pack` creates a local `.tgz` archive.
-It does not publish to a registry.
+`test:git` installs the public Git revision in an isolated host with a fresh cache.
+Set `OPTCHAT_GIT_PACKAGE` to test another Git revision.
+The test uses a loopback model and does not change user configuration.
 
-4. Create `package.json` in a separate plugin directory.
-
-```json
-{"name":"local-optchat","type":"module","exports":"./index.ts"}
-```
-
-5. Create `index.ts` in that directory.
-6. Replace the example path with the absolute repository path.
-
-```ts
-export { default } from "/ABSOLUTE/PATH/multisession-optchat/dist/adapters/opencode/plugin.js"
-```
-
-7. Add the plugin to your OpenCode V2 project configuration.
-8. Preserve all existing configuration entries.
-9. Replace each example identifier and path.
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    {
-      "package": "/ABSOLUTE/PATH/local-optchat",
-      "options": {
-        "database": "/ABSOLUTE/PATH/private-directory/memory.sqlite",
-        "scopeId": "USER-ID:STABLE-PROJECT-ID",
-        "compactorModel": { "providerID": "YOUR-PROVIDER", "id": "YOUR-MODEL" },
-        "memoryBytes": 16000,
-        "safetyTokens": 2048,
-        "waitMs": 30000
-      }
-    }
-  ]
-}
-```
+## Configuration
 
 Use an existing configured model with known context and output limits.
 Use `fakeSummarizer: true` only for local tests.

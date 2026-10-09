@@ -35,11 +35,12 @@ try {
   await symlink(join(repository, "node_modules/@opencode"), join(root, "node_modules/@opencode"));
   await symlink(join(repository, "node_modules/@types"), join(root, "node_modules/@types"));
   await symlink(packageDir, join(root, "node_modules/opencode-optchat"));
-  await Bun.write(join(root, "consumer.ts"), `import { Store, Engine, type Snapshot } from "opencode-optchat";
-import plugin from "opencode-optchat/plugin";
+   await Bun.write(join(root, "consumer.ts"), `import { Store, Engine, type Snapshot } from "opencode-optchat/core";
+import plugin from "opencode-optchat";
+import explicitPlugin from "opencode-optchat/plugin";
 const store = new Store(); const engine = new Engine(store); engine.register("package", "test", "stable");
 const snapshot: Snapshot = engine.admit("package", "turn").snapshot;
-if (snapshot.sessionId !== "package" || !plugin.setup) throw new Error("Broken package exports"); store.close();`);
+if (snapshot.sessionId !== "package" || !plugin.setup || plugin !== explicitPlugin) throw new Error("Broken package exports"); store.close();`);
   await run(["bun", join(root, "consumer.ts")], root);
   await run([join(repository, "node_modules/.bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--allowImportingTsExtensions", "--module", "Preserve", "--moduleResolution", "bundler", "--target", "ESNext", "--types", "bun", join(root, "consumer.ts")], root);
   await run(["bun", "run", "scripts/integration.ts"], repository, { OPTCHAT_PLUGIN_ENTRY: join(packageDir, metadata.exports["./plugin"].default) });

@@ -58,6 +58,11 @@ Do not publish those files without checking their contents.
 The integration deliberately kills only its own private service to verify crash recovery.
 `build` produces JavaScript and declarations in `dist`. `pack` creates a local archive without registry publication.
 
+Commit generated `dist` files with their source changes. Git installations do not execute build scripts.
+The default package export is the plugin. The standalone engine uses the `./core` export.
+Run `bun run test:git` to check the public Git package in a fresh private host.
+Set `OPTCHAT_GIT_PACKAGE` to select a different Git revision.
+
 `evaluate` calls a real model only when the operator supplies evaluation environment variables.
 Do not run a billable evaluation without explicit authorization.
 Lexical benchmark checks do not prove semantic correctness.

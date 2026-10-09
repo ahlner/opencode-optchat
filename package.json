@@ -12,7 +12,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/types/index.d.ts", "default": "./dist/index.js" },
+    ".": { "types": "./dist/types/adapters/opencode/plugin.d.ts", "default": "./dist/adapters/opencode/plugin.js" },
+    "./core": { "types": "./dist/types/index.d.ts", "default": "./dist/index.js" },
     "./plugin": { "types": "./dist/types/adapters/opencode/plugin.d.ts", "default": "./dist/adapters/opencode/plugin.js" }
   },
   "files": ["dist", "README.md", "docs", "AGENTS.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
@@ -29,6 +30,7 @@
     "spike": "bun run scripts/spike.ts",
     "test:integration": "bun run build && bun run scripts/integration.ts",
     "test:package": "bun run build && bun run scripts/package-test.ts",
+    "test:git": "bun run scripts/git-test.ts",
     "test:coverage": "bun test --coverage",
     "test:docs": "bun run scripts/docs-check.ts",
     "audit:licenses": "bun run scripts/license-audit.ts",

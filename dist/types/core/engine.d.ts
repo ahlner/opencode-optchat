@@ -1,0 +1,48 @@
+import { Store } from "../storage/store.ts";
+import { type Summarizer } from "../compactor/summarizer.ts";
+import { type Node, type Outcome, type Session, type Snapshot, type SourceInput, type SourceRecord, type Turn, type View } from "./types.ts";
+interface Scope {
+    id: string;
+    epoch: number;
+    policy: number;
+    highWater: number;
+}
+export interface EngineOptions {
+    high: number;
+    low: number;
+    chunkBytes: number;
+    leaseMs: number;
+    broadcastSubagents: boolean;
+}
+export declare class Engine {
+    readonly store: Store;
+    readonly summarizer: Summarizer;
+    readonly options: EngineOptions;
+    constructor(store: Store, summarizer?: Summarizer, options?: Partial<EngineOptions>);
+    scope(id: string): Scope;
+    register(id: string, scopeId: string, projectId: string, parentId?: string): Session;
+    session(id: string): Session;
+    sources(sessionId: string, generation: number): SourceRecord[];
+    private sourceCount;
+    source(id: string): SourceRecord;
+    node(id: string): Node;
+    findNode(tree: string, start: number, count: number): Node | undefined;
+    view(tree: string): View;
+    admit(sessionId: string, id: string): Turn;
+    validateSnapshot(snapshot: Snapshot): void;
+    append(input: SourceInput): SourceRecord;
+    stage(input: SourceInput): void;
+    sealStaged(sessionId: string, generation: number, eventKey: string): SourceRecord;
+    finish(sessionId: string, id: string, outcome: Outcome, completedAt?: string): Turn;
+    private schedulePublications;
+    private writeNode;
+    private summarizeFull;
+    workOne(): Promise<boolean>;
+    drain(max?: number): Promise<void>;
+    retryFailed(): void;
+    markInherited(sessionId: string, id: string): void;
+    projection(view: View, budget: number): Node[];
+    ownView(snapshot: Snapshot): View;
+    retire(sessionId: string, mode: "edit" | "delete", preserve?: number, retainPublications?: boolean): void;
+}
+export {};

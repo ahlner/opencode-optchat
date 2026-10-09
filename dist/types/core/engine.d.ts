@@ -14,6 +14,12 @@ export interface EngineOptions {
     leaseMs: number;
     broadcastSubagents: boolean;
     maxRunningJobs: number;
+    jobEvent?: (event: string, details: {
+        jobId: string;
+        kind: string;
+        fence: number;
+        leaseUntil: number;
+    }) => void;
 }
 export declare class Engine {
     readonly store: Store;

@@ -87,6 +87,35 @@ Startup recovers the exact readiness error that earlier versions incorrectly sto
 Permission revocations and uncertain original mappings remain blocked.
 Recovery cannot recreate originals that neither the host nor a retained checkpoint exposes.
 
+### Diagnostic logging
+
+Active adapters automatically write `<database>.diagnostics.ndjson` beside their database.
+**Show memory status** displays the server-side file path.
+No setting change is necessary after installing this version.
+Inactive installations do not create a diagnostic file.
+
+The log records these operations:
+
+- Queue entry, queue wait, operation start, completion, cancellation, and elapsed time.
+- Native session and agent requests, history counts, ingestion, and context assembly.
+- Compactor job claims, fences, initial leases, completion, release, and ownership loss.
+- Model request boundaries, input and output byte counts, and rate-limit backoff.
+- Five-second heartbeats, active waiting phases, event-loop delay, and job counters.
+
+Entries contain timestamps, process IDs, run IDs, operation IDs, session IDs, and sanitized error codes.
+The startup entry includes the module hash to identify cached plugin code.
+The log excludes prompts, originals, summaries, tool arguments, credentials, and raw provider errors.
+
+Each file uses mode `0600`.
+The logger rotates near two MiB and retains one previous file with suffix `.1`.
+Logging failures do not fail a session.
+Inspect both files when an operation crosses a rotation or restart.
+
+A waiting phase identifies the local operation that has not completed.
+It does not prove a deadlock or identify a remote provider's internal state.
+Heartbeat gaps can indicate event-loop blocking, process suspension, or process termination.
+Logs contain private activity metadata. Review them before sharing them publicly.
+
 ### Existing sessions and preparation limits
 
 Enabling memory in an existing session can require many summary calls before the first primary model request.

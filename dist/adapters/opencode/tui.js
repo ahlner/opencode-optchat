@@ -86,6 +86,7 @@ Publications: ${status.publications}
 Active turns: ${status.activeTurns}
 Jobs: ${JSON.stringify(status.jobs)}
 Last error: ${status.lastError ?? "none"}
+Diagnostics: ${draft.database}.diagnostics.ndjson
 Status does not certify summary accuracy.` });
       } else if (field === "retry") {
         if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs without deleting originals. Subsequent processing can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
@@ -242,4 +243,4 @@ export {
   tui_default as default
 };
 
-//# debugId=1C380061F5EA014F64756E2164756E21
+//# debugId=E9F2EB300158850064756E2164756E21

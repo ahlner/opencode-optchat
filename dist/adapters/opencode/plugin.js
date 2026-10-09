@@ -375,10 +375,19 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
+    const report = (event) => {
+      try {
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil });
+      } catch {}
+    };
+    report("job.claim");
     const renewal = setInterval(() => {
       try {
-        this.store.renew(job, this.options.leaseMs);
-      } catch {}
+        if (!this.store.renew(job, this.options.leaseMs))
+          report("job.renew.unowned");
+      } catch {
+        report("job.renew.error");
+      }
     }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
     renewal.unref();
     try {
@@ -435,15 +444,19 @@ class Engine {
         }
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
+      report("job.done");
     } catch (error) {
       if (signal?.aborted) {
         this.store.release(job);
+        report("job.release");
         throw signal.reason;
       }
       if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
         this.store.fail(job, error);
+        report("job.failed");
         throw error;
       }
+      report("job.unowned");
     } finally {
       clearInterval(renewal);
     }
@@ -1115,7 +1128,7 @@ async function setupSettings(ctx, start) {
 }
 
 // src/adapters/opencode/compactor-request.ts
-async function compactorRequest(generate, waitMs, sleep = pause, parent) {
+async function compactorRequest(generate, waitMs, sleep = pause, parent, backoff) {
   const signal = parent ? AbortSignal.any([parent, AbortSignal.timeout(waitMs)]) : AbortSignal.timeout(waitMs);
   for (let attempt = 0;; attempt++) {
     signal.throwIfAborted();
@@ -1129,6 +1142,9 @@ async function compactorRequest(generate, waitMs, sleep = pause, parent) {
       const delay = Math.max(1000 * 2 ** attempt, seconds ? Number(seconds[1]) * 1000 : 0);
       if (!Number.isFinite(delay) || delay > 30000)
         throw error;
+      try {
+        backoff?.(attempt + 1, delay);
+      } catch {}
       await abortable(() => sleep(delay, signal), signal);
     }
   }
@@ -1146,6 +1162,120 @@ function pause(ms, signal) {
     }, ms);
     signal.addEventListener("abort", abort, { once: true });
   });
+}
+
+// src/adapters/opencode/diagnostics.ts
+import { appendFileSync, closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, renameSync, statSync } from "fs";
+var fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash"]);
+function diagnosticCode(error) {
+  if (error instanceof MemoryError)
+    return /^[A-Z_]{1,64}$/.test(error.code) ? error.code : "MEMORY_ERROR";
+  return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name) ? error.name : "ERROR";
+}
+
+class Diagnostics {
+  counters;
+  maxBytes;
+  path;
+  fd;
+  sequence = 0;
+  closed = false;
+  spans = new Map;
+  timer;
+  constructor(database, counters = () => ({}), intervalMs = 5000, maxBytes = 2 * 1024 * 1024) {
+    this.counters = counters;
+    this.maxBytes = maxBytes;
+    this.path = `${database}.diagnostics.ndjson`;
+    let previous = performance.now();
+    this.timer = setInterval(() => {
+      const now = performance.now();
+      this.emit("heartbeat", { driftMs: Math.round(Math.max(0, now - previous - intervalMs)), active: this.spans.size, ...this.counts() });
+      for (const [operationId, span] of this.spans)
+        this.emit("waiting", { operationId, parentId: span.parentId, phase: span.phase, elapsedMs: Math.round(now - span.started) });
+      previous = now;
+    }, intervalMs);
+    this.timer.unref();
+    let moduleHash;
+    try {
+      moduleHash = new Bun.CryptoHasher("sha256").update(readFileSync(import.meta.path)).digest("hex");
+    } catch {}
+    this.emit("runtime.start", { moduleHash });
+  }
+  counts() {
+    try {
+      return this.counters();
+    } catch {
+      return {};
+    }
+  }
+  emit(event, details = {}) {
+    if (this.closed || !/^[a-z][a-z0-9._-]{0,63}$/.test(event))
+      return;
+    const safe = {};
+    for (const [field, value] of Object.entries(details))
+      if (fields.has(field) && (typeof value === "boolean" || typeof value === "number" && Number.isFinite(value) || typeof value === "string" && value.length <= 128))
+        safe[field] = value;
+    try {
+      if (this.fd !== undefined && fstatSync(this.fd).ino !== statSync(this.path).ino) {
+        closeSync(this.fd);
+        this.fd = undefined;
+      }
+      if (this.fd === undefined) {
+        this.fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 384);
+        fchmodSync(this.fd, 384);
+      }
+      if (fstatSync(this.fd).size >= this.maxBytes) {
+        closeSync(this.fd);
+        this.fd = undefined;
+        renameSync(this.path, `${this.path}.1`);
+        this.fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 384);
+      }
+      appendFileSync(this.fd, `${JSON.stringify({ time: new Date().toISOString(), runId: this.runId, pid: process.pid, event, ...safe })}
+`);
+    } catch {
+      if (this.fd !== undefined) {
+        try {
+          closeSync(this.fd);
+        } catch {}
+        this.fd = undefined;
+      }
+    }
+  }
+  runId = crypto.randomUUID();
+  begin(phase, details = {}) {
+    const operationId = ++this.sequence, started = performance.now();
+    this.spans.set(operationId, { phase, started, parentId: typeof details.parentId === "number" ? details.parentId : undefined });
+    this.emit("phase.start", { ...details, phase, operationId });
+    return { operationId, end: (error) => {
+      if (!this.spans.delete(operationId))
+        return;
+      this.emit("phase.end", { ...details, phase, operationId, elapsedMs: Math.round(performance.now() - started), ...error === undefined ? {} : { errorCode: diagnosticCode(error) } });
+    } };
+  }
+  async span(phase, work, details = {}) {
+    const span = this.begin(phase, details);
+    try {
+      const result = await work();
+      span.end();
+      return result;
+    } catch (error) {
+      span.end(error);
+      throw error;
+    }
+  }
+  close() {
+    if (this.closed)
+      return;
+    this.emit("runtime.stop", { active: this.spans.size });
+    this.closed = true;
+    clearInterval(this.timer);
+    if (this.fd !== undefined) {
+      try {
+        closeSync(this.fd);
+      } catch {}
+      this.fd = undefined;
+    }
+  }
 }
 
 // src/adapters/opencode/plugin.ts
@@ -1170,41 +1300,73 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     store.close();
     throw error;
   }
+  const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()));
+  diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
   for (const session of store.all("sessions"))
     if (session.disabled && falseReadinessDisable.test(session.disabled)) {
       delete session.disabled;
       store.set("sessions", session.id, session);
     }
+  let activeJob;
   const compactor = config.fakeSummarizer ? new FakeSummarizer : new ModelSummarizer(async (prompt, signal) => {
-    const models = await abortable(() => ctx.model.list({}), signal);
+    const models = await diagnostics.span("compactor.model.list", () => abortable(() => ctx.model.list({}), signal));
     const model = models.data.find((m) => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
-    return compactorRequest(async (signal) => (await ctx.generate.text({ model: config.compactorModel, prompt }, { signal })).text, waitMs, undefined, signal);
+    return diagnostics.span("compactor.request", () => compactorRequest(async (signal) => diagnostics.span("compactor.generate", async () => {
+      const result = await abortable(() => ctx.generate.text({ model: config.compactorModel, prompt }, { signal }), signal);
+      diagnostics.emit("compactor.result", { jobId: activeJob, outputBytes: Buffer.byteLength(result.text, "utf8") });
+      return result.text;
+    }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
   }, key(config.compactorModel));
-  const engine = new Engine(store, compactor, { maxRunningJobs: 1 }), retrieval = new Retrieval(engine);
+  const engine = new Engine(store, compactor, { maxRunningJobs: 1, jobEvent: (event, details) => {
+    if (event === "job.claim")
+      activeJob = details.jobId;
+    diagnostics.emit(event, { ...details, parentId: activeOperation });
+    if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event))
+      activeJob = undefined;
+  } }), retrieval = new Retrieval(engine);
   let tail = Promise.resolve(), stopped = false, operationSignal;
-  const operation = (fn) => abortable(fn, operationSignal);
-  const serial = (fn, parent) => {
+  let queued = 0, activeOperation;
+  const operation = (fn, phase = "host.request") => diagnostics.span(phase, () => abortable(fn, operationSignal), { parentId: activeOperation });
+  const serial = (fn, parent, phase = "queue.operation", details = {}) => {
+    const waiting = diagnostics.begin("queue.wait", { ...details, queued: ++queued }), queuedAt = performance.now();
     const result = tail.then(async () => {
+      waiting.end();
+      --queued;
+      const span = diagnostics.begin(phase, { ...details, parentId: waiting.operationId, queued, queueMs: Math.round(performance.now() - queuedAt) });
+      activeOperation = span.operationId;
       const controller = new AbortController;
       const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
       operationSignal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
       try {
         operationSignal.throwIfAborted();
         return await fn();
+      } catch (error) {
+        span.end(error);
+        throw error;
       } finally {
+        span.end();
         clearTimeout(timer);
         operationSignal = undefined;
+        activeOperation = undefined;
       }
     });
     tail = result.catch(() => {});
+    if (parent) {
+      const cancelled = () => diagnostics.emit("queue.cancel", { operationId: waiting.operationId, elapsedMs: Math.round(performance.now() - queuedAt), aborted: true });
+      if (parent.aborted)
+        cancelled();
+      else
+        parent.addEventListener("abort", cancelled, { once: true });
+      result.then(() => parent.removeEventListener("abort", cancelled), () => parent.removeEventListener("abort", cancelled));
+    }
     return parent ? abortable(() => result, parent) : result;
   };
   const compact = async () => {
     try {
-      await engine.drain(1e5, operationSignal);
+      await diagnostics.span("compactor.drain", () => engine.drain(1e5, operationSignal), { parentId: activeOperation });
     } catch (error) {
       if (operationSignal?.aborted)
         throw operationSignal.reason;
@@ -1232,157 +1394,174 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     disable(id, reason);
   };
   const reconcile = async (sessionID, requestAgent) => {
-    const info = await operation(() => ctx.session.get({ sessionID }));
-    const s = engine.register(sessionID, config.scopeId, config.projectId ?? info.projectID, info.parentID);
-    const agentId = requestAgent ?? info.agent ?? store.get("adapter", sessionID)?.agentId ?? "build";
-    const deadline = Date.now() + waitMs;
-    let agent;
-    for (;; ) {
-      try {
-        agent = await operation(() => ctx.agent.get({ agentID: agentId, location: { directory: info.location.directory } }));
-        break;
-      } catch (error) {
-        if (!String(error).includes("Agent not found") || Date.now() >= deadline)
-          throw error;
-        await operation(() => Bun.sleep(50));
+    const trace = diagnostics.begin("reconcile", { sessionId: sessionID, parentId: activeOperation });
+    try {
+      const info = await operation(() => ctx.session.get({ sessionID }), "host.session.get");
+      const s = engine.register(sessionID, config.scopeId, config.projectId ?? info.projectID, info.parentID);
+      const agentId = requestAgent ?? info.agent ?? store.get("adapter", sessionID)?.agentId ?? "build";
+      const deadline = Date.now() + waitMs;
+      let agent;
+      for (;; ) {
+        try {
+          agent = await operation(() => ctx.agent.get({ agentID: agentId, location: { directory: info.location.directory } }), "host.agent.get");
+          break;
+        } catch (error) {
+          if (!String(error).includes("Agent not found") || Date.now() >= deadline)
+            throw error;
+          await operation(() => Bun.sleep(50));
+        }
       }
-    }
-    const policy = memoryPolicy([...agent.data.permissions, ...info.permissions ?? []], config.scopeId);
-    const previousPolicy = store.get("policies", sessionID);
-    let interruptActive = false;
-    store.transaction(() => {
-      if (previousPolicy && previousPolicy.digest !== policy.digest) {
-        const journal = store.get("adapter", sessionID);
-        interruptActive = !!journal?.activeId;
-        const checkpoints = policy.read ? store.all("checkpoints").filter((c) => c.sessionId === sessionID) : [];
-        const aliases = policy.read ? store.db.query("SELECT id,value FROM entities WHERE bucket='checkpointAliases'").all().filter((r) => JSON.parse(r.value).sessionId === sessionID) : [];
-        if (!s.disabled)
-          engine.retire(sessionID, "edit", policy.read ? engine.sources(sessionID, s.generation).length : 0, false);
-        delete s.disabled;
-        s.generation = store.get("sessions", sessionID).generation;
-        for (const checkpoint of checkpoints)
-          store.set("checkpoints", checkpoint.id, { ...checkpoint, generation: s.generation });
-        for (const row of aliases)
-          store.set("checkpointAliases", row.id, JSON.parse(row.value));
-        if (policy.read && journal) {
-          journal.activeId = undefined;
-          store.set("adapter", sessionID, journal);
-        } else
-          store.remove("adapter", sessionID);
-        const scope = engine.scope(config.scopeId);
-        scope.policy++;
-        store.set("scopes", config.scopeId, scope);
-      }
-      s.broadcast = !info.parentID && policy.share;
-      if (!policy.read)
-        s.disabled = "Memory read permission was revoked";
-      store.set("sessions", sessionID, s);
-      store.set("policies", sessionID, policy);
-    });
-    if (interruptActive)
-      await operation(() => ctx.session.interrupt({ sessionID }));
-    engine.session(sessionID);
-    insist(!info.revert, "REVERT_PENDING", "Commit or clear the staged revert before admitting another turn");
-    let raw = await operation(() => ctx.session.context({ sessionID }));
-    const marker = raw.findLast((m) => m.type === "compaction" && m.status === "completed" && typeof m.metadata?.optchatCheckpoint === "string");
-    const markerId = marker && marker.metadata.optchatCheckpoint;
-    const alias = markerId && store.get("checkpointAliases", key(sessionID, markerId));
-    const checkpoint = markerId && store.get("checkpoints", alias ? alias.checkpointId : markerId);
-    insist(!marker || checkpoint, "CHECKPOINT_MISSING", "Compacted originals have no authorized retained checkpoint");
-    if (checkpoint) {
-      if (marker) {
-        const copiedFromParent = info.fork && !store.get("forks", sessionID) && checkpoint.sessionId === info.fork.sessionID;
-        insist(copiedFromParent || checkpoint.sessionId === sessionID && checkpoint.generation === s.generation, "CHECKPOINT_REVOKED", "Checkpoint belongs to another session or a retired generation");
-        const ids = new Set(raw.map((m) => m.id));
-        raw = [...checkpoint.messages.filter((m) => !ids.has(m.id)), ...raw];
-      }
-    }
-    const journal = store.get("adapter", sessionID) ?? { seen: {}, terminalIds: [] };
-    journal.agentId = agentId;
-    if (info.fork && !store.get("forks", sessionID)) {
-      const parent = await reconcile(info.fork.sessionID);
-      const boundary = info.fork.boundary;
-      const index = parent.raw.findIndex((m) => m.id === boundary.messageID);
-      insist(index >= 0, "FORK_BOUNDARY", "Fork boundary must resolve to retained parent history");
-      const prefix = parent.raw.slice(0, index + (boundary.type === "through" ? 1 : 0));
-      insist(raw.length >= prefix.length && prefix.every((m, i) => m.type === raw[i].type && contentFingerprint(m) === contentFingerprint(raw[i])), "FORK_BOUNDARY", "Fork copies must match the exact parent prefix");
-      const inherited = raw.slice(0, prefix.length), inheritedId = key("inherited", sessionID);
-      const parentSession = engine.session(info.fork.sessionID);
-      const parentSources = new Map(engine.sources(parentSession.id, parentSession.generation).map((r) => [r.eventKey, r]));
+      const policy = memoryPolicy([...agent.data.permissions, ...info.permissions ?? []], config.scopeId);
+      const previousPolicy = store.get("policies", sessionID);
+      let interruptActive = false;
       store.transaction(() => {
-        engine.admit(sessionID, inheritedId);
-        engine.markInherited(sessionID, inheritedId);
-        for (const [i, message] of inherited.entries()) {
-          const originals = extract(prefix[i]);
-          for (const [j, r] of extract(message).entries()) {
-            const origin = parentSources.get(originals[j].key);
-            insist(origin, "FORK_SOURCE", "Inherited records must resolve to sealed parent originals");
-            engine.append({ sessionId: sessionID, generation: s.generation, projectId: s.projectId, worktreeId: origin.worktreeId, commit: origin.commit, inheritedFrom: { sessionId: origin.sessionId, generation: origin.generation, seq: origin.seq }, eventKey: r.key, turnId: inheritedId, kind: r.kind, timestamp: r.timestamp, payload: r.payload, callId: r.callId, truncated: r.truncated });
-          }
-          if (extract(message).length)
-            journal.seen[message.id] = fingerprint(message);
-          if (message.type === "idle")
-            journal.terminalIds.push(message.id);
+        if (previousPolicy && previousPolicy.digest !== policy.digest) {
+          const journal = store.get("adapter", sessionID);
+          interruptActive = !!journal?.activeId;
+          const checkpoints = policy.read ? store.all("checkpoints").filter((c) => c.sessionId === sessionID) : [];
+          const aliases = policy.read ? store.db.query("SELECT id,value FROM entities WHERE bucket='checkpointAliases'").all().filter((r) => JSON.parse(r.value).sessionId === sessionID) : [];
+          if (!s.disabled)
+            engine.retire(sessionID, "edit", policy.read ? engine.sources(sessionID, s.generation).length : 0, false);
+          delete s.disabled;
+          s.generation = store.get("sessions", sessionID).generation;
+          for (const checkpoint of checkpoints)
+            store.set("checkpoints", checkpoint.id, { ...checkpoint, generation: s.generation });
+          for (const row of aliases)
+            store.set("checkpointAliases", row.id, JSON.parse(row.value));
+          if (policy.read && journal) {
+            journal.activeId = undefined;
+            store.set("adapter", sessionID, journal);
+          } else
+            store.remove("adapter", sessionID);
+          const scope = engine.scope(config.scopeId);
+          scope.policy++;
+          store.set("scopes", config.scopeId, scope);
         }
-        const terminal = inherited.at(-1);
-        engine.finish(sessionID, inheritedId, terminal?.type === "idle" && terminal.outcome === "succeeded" ? "completed" : terminal?.type === "idle" && terminal.outcome === "failed" ? "failed" : "interrupted", terminal?.type === "idle" ? new Date(terminal.time.created).toISOString() : undefined);
-        store.set("adapter", sessionID, journal);
-        store.set("forks", sessionID, { parentId: info.fork.sessionID, boundary, retention: "independent-copy" });
-        if (markerId && checkpoint) {
-          const copy = { id: hash(key(checkpoint.id, sessionID, s.generation)), sessionId: sessionID, generation: s.generation, messages: inherited.filter((m) => ["user", "assistant", "shell", "idle"].includes(m.type)).map(retainedMessage) };
-          store.set("checkpoints", copy.id, copy);
-          store.set("checkpointAliases", key(sessionID, markerId), { sessionId: sessionID, checkpointId: copy.id });
-        }
+        s.broadcast = !info.parentID && policy.share;
+        if (!policy.read)
+          s.disabled = "Memory read permission was revoked";
+        store.set("sessions", sessionID, s);
+        store.set("policies", sessionID, policy);
       });
-      await compact();
-    }
-    const byId = new Map(raw.map((m) => [m.id, m]));
-    const changed = Object.entries(journal.seen).filter(([id, digest]) => !byId.has(id) || fingerprint(byId.get(id)) !== digest).map(([id]) => id);
-    if (changed.length) {
-      const records = engine.sources(sessionID, s.generation);
-      const affected = records.filter((r) => changed.some((id) => r.eventKey.startsWith(`${id}:`)));
-      insist(affected.length, "HOST_SHAPE", "Changed history must resolve to retained original records");
-      const preserve = Math.min(...affected.map((r) => store.get("turns", key(sessionID, s.generation, r.turnId)).start));
-      engine.retire(sessionID, "edit", preserve);
-      s.generation = engine.session(sessionID).generation;
-      journal.seen = Object.fromEntries(Object.entries(journal.seen).filter(([id]) => records.some((r) => r.seq < preserve && r.eventKey.startsWith(`${id}:`))));
-      journal.terminalIds = [];
-      journal.activeId = undefined;
-      store.set("adapter", sessionID, journal);
-      await compact();
-    }
-    let segment = [];
-    for (const m of raw) {
-      if (m.type !== "idle") {
-        if (!journal.seen[m.id])
-          segment.push(m);
-        continue;
-      }
-      if (journal.terminalIds.includes(m.id)) {
-        segment = [];
-        continue;
-      }
-      const firstUser = segment.find((x) => x.type === "user");
-      if (firstUser) {
-        const id = journal.activeId ?? firstUser.id;
-        const turn = store.get("turns", key(sessionID, s.generation, id)) ?? engine.admit(sessionID, id);
-        if (!turn.outcome) {
-          for (const message of segment)
-            for (const r of extract(message))
-              engine.append({ sessionId: sessionID, generation: s.generation, projectId: s.projectId, worktreeId: info.location.directory, eventKey: r.key, turnId: id, kind: r.kind, timestamp: r.timestamp, payload: r.payload, callId: r.callId, truncated: r.truncated });
-          engine.finish(sessionID, id, m.outcome === "succeeded" ? "completed" : m.outcome === "failed" ? "failed" : "interrupted", new Date(m.time.created).toISOString());
+      if (interruptActive)
+        await operation(() => ctx.session.interrupt({ sessionID }), "host.session.interrupt");
+      engine.session(sessionID);
+      insist(!info.revert, "REVERT_PENDING", "Commit or clear the staged revert before admitting another turn");
+      let raw = await operation(() => ctx.session.context({ sessionID }), "host.session.context");
+      diagnostics.emit("reconcile.history", { operationId: trace.operationId, sessionId: sessionID, messages: raw.length, terminals: raw.filter((m) => m.type === "idle").length });
+      const marker = raw.findLast((m) => m.type === "compaction" && m.status === "completed" && typeof m.metadata?.optchatCheckpoint === "string");
+      const markerId = marker && marker.metadata.optchatCheckpoint;
+      const alias = markerId && store.get("checkpointAliases", key(sessionID, markerId));
+      const checkpoint = markerId && store.get("checkpoints", alias ? alias.checkpointId : markerId);
+      insist(!marker || checkpoint, "CHECKPOINT_MISSING", "Compacted originals have no authorized retained checkpoint");
+      if (checkpoint) {
+        if (marker) {
+          const copiedFromParent = info.fork && !store.get("forks", sessionID) && checkpoint.sessionId === info.fork.sessionID;
+          insist(copiedFromParent || checkpoint.sessionId === sessionID && checkpoint.generation === s.generation, "CHECKPOINT_REVOKED", "Checkpoint belongs to another session or a retired generation");
+          const ids = new Set(raw.map((m) => m.id));
+          raw = [...checkpoint.messages.filter((m) => !ids.has(m.id)), ...raw];
         }
-        for (const message of segment)
-          if (extract(message).length)
-            journal.seen[message.id] = fingerprint(message);
-        journal.activeId = undefined;
+      }
+      const journal = store.get("adapter", sessionID) ?? { seen: {}, terminalIds: [] };
+      journal.agentId = agentId;
+      if (info.fork && !store.get("forks", sessionID)) {
+        const parent = await reconcile(info.fork.sessionID);
+        const boundary = info.fork.boundary;
+        const index = parent.raw.findIndex((m) => m.id === boundary.messageID);
+        insist(index >= 0, "FORK_BOUNDARY", "Fork boundary must resolve to retained parent history");
+        const prefix = parent.raw.slice(0, index + (boundary.type === "through" ? 1 : 0));
+        insist(raw.length >= prefix.length && prefix.every((m, i) => m.type === raw[i].type && contentFingerprint(m) === contentFingerprint(raw[i])), "FORK_BOUNDARY", "Fork copies must match the exact parent prefix");
+        const inherited = raw.slice(0, prefix.length), inheritedId = key("inherited", sessionID);
+        const parentSession = engine.session(info.fork.sessionID);
+        const parentSources = new Map(engine.sources(parentSession.id, parentSession.generation).map((r) => [r.eventKey, r]));
+        store.transaction(() => {
+          engine.admit(sessionID, inheritedId);
+          engine.markInherited(sessionID, inheritedId);
+          for (const [i, message] of inherited.entries()) {
+            const originals = extract(prefix[i]);
+            for (const [j, r] of extract(message).entries()) {
+              const origin = parentSources.get(originals[j].key);
+              insist(origin, "FORK_SOURCE", "Inherited records must resolve to sealed parent originals");
+              engine.append({ sessionId: sessionID, generation: s.generation, projectId: s.projectId, worktreeId: origin.worktreeId, commit: origin.commit, inheritedFrom: { sessionId: origin.sessionId, generation: origin.generation, seq: origin.seq }, eventKey: r.key, turnId: inheritedId, kind: r.kind, timestamp: r.timestamp, payload: r.payload, callId: r.callId, truncated: r.truncated });
+            }
+            if (extract(message).length)
+              journal.seen[message.id] = fingerprint(message);
+            if (message.type === "idle")
+              journal.terminalIds.push(message.id);
+          }
+          const terminal = inherited.at(-1);
+          engine.finish(sessionID, inheritedId, terminal?.type === "idle" && terminal.outcome === "succeeded" ? "completed" : terminal?.type === "idle" && terminal.outcome === "failed" ? "failed" : "interrupted", terminal?.type === "idle" ? new Date(terminal.time.created).toISOString() : undefined);
+          store.set("adapter", sessionID, journal);
+          store.set("forks", sessionID, { parentId: info.fork.sessionID, boundary, retention: "independent-copy" });
+          if (markerId && checkpoint) {
+            const copy = { id: hash(key(checkpoint.id, sessionID, s.generation)), sessionId: sessionID, generation: s.generation, messages: inherited.filter((m) => ["user", "assistant", "shell", "idle"].includes(m.type)).map(retainedMessage) };
+            store.set("checkpoints", copy.id, copy);
+            store.set("checkpointAliases", key(sessionID, markerId), { sessionId: sessionID, checkpointId: copy.id });
+          }
+        });
         await compact();
       }
-      journal.terminalIds.push(m.id);
-      segment = [];
+      const byId = new Map(raw.map((m) => [m.id, m]));
+      const changed = Object.entries(journal.seen).filter(([id, digest]) => !byId.has(id) || fingerprint(byId.get(id)) !== digest).map(([id]) => id);
+      if (changed.length) {
+        const records = engine.sources(sessionID, s.generation);
+        const affected = records.filter((r) => changed.some((id) => r.eventKey.startsWith(`${id}:`)));
+        insist(affected.length, "HOST_SHAPE", "Changed history must resolve to retained original records");
+        const preserve = Math.min(...affected.map((r) => store.get("turns", key(sessionID, s.generation, r.turnId)).start));
+        engine.retire(sessionID, "edit", preserve);
+        s.generation = engine.session(sessionID).generation;
+        journal.seen = Object.fromEntries(Object.entries(journal.seen).filter(([id]) => records.some((r) => r.seq < preserve && r.eventKey.startsWith(`${id}:`))));
+        journal.terminalIds = [];
+        journal.activeId = undefined;
+        store.set("adapter", sessionID, journal);
+        await compact();
+      }
+      let segment = [];
+      for (const m of raw) {
+        if (m.type !== "idle") {
+          if (!journal.seen[m.id])
+            segment.push(m);
+          continue;
+        }
+        if (journal.terminalIds.includes(m.id)) {
+          segment = [];
+          continue;
+        }
+        const firstUser = segment.find((x) => x.type === "user");
+        if (firstUser) {
+          const ingest = diagnostics.begin("reconcile.ingest", { sessionId: sessionID, parentId: trace.operationId, messages: segment.length });
+          try {
+            const id = journal.activeId ?? firstUser.id;
+            const turn = store.get("turns", key(sessionID, s.generation, id)) ?? engine.admit(sessionID, id);
+            if (!turn.outcome) {
+              for (const message of segment)
+                for (const r of extract(message))
+                  engine.append({ sessionId: sessionID, generation: s.generation, projectId: s.projectId, worktreeId: info.location.directory, eventKey: r.key, turnId: id, kind: r.kind, timestamp: r.timestamp, payload: r.payload, callId: r.callId, truncated: r.truncated });
+              engine.finish(sessionID, id, m.outcome === "succeeded" ? "completed" : m.outcome === "failed" ? "failed" : "interrupted", new Date(m.time.created).toISOString());
+            }
+            for (const message of segment)
+              if (extract(message).length)
+                journal.seen[message.id] = fingerprint(message);
+            journal.activeId = undefined;
+          } catch (error) {
+            ingest.end(error);
+            throw error;
+          } finally {
+            ingest.end();
+          }
+          await compact();
+        }
+        journal.terminalIds.push(m.id);
+        segment = [];
+      }
+      store.set("adapter", sessionID, journal);
+      return { raw, active: segment, journal };
+    } catch (error) {
+      trace.end(error);
+      throw error;
+    } finally {
+      trace.end();
     }
-    store.set("adapter", sessionID, journal);
-    return { raw, active: segment, journal };
   };
   const reconcileKnown = async (except) => {
     for (const s of store.all("sessions"))
@@ -1396,6 +1575,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       }
   };
   await ctx.session.hook("context", async (event) => {
+    diagnostics.emit("primary.received", { sessionId: event.sessionID });
     const deadline = Date.now() + waitMs;
     const controller = new AbortController;
     const timer = setTimeout(() => controller.abort(new MemoryError("MEMORY_NOT_READY", "Memory preparation reached its deadline. Pending work remains available for retry")), waitMs);
@@ -1414,12 +1594,12 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
             journal.activeId = id;
             store.set("adapter", event.sessionID, journal);
             const live = liveSuffix(event.messages, new Set(active.map((m) => m.id)));
-            const models = await operation(() => ctx.model.list({}));
+            const models = await operation(() => ctx.model.list({}), "primary.model.list");
             const model = models.data.find((m) => m.id === event.model.id && m.providerID === event.model.providerID);
             insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Cannot assemble context without model context/output limits");
             const outputTokens = typeof event.options.maxTokens === "number" ? event.options.maxTokens : model.limit.output;
             insist(outputTokens <= model.limit.output, "CONFIG", "Requested output exceeds the model output limit");
-            const result = assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } });
+            const result = await diagnostics.span("context.assemble", async () => assembleContext(engine, { system: event.system, tools: event.tools, live, snapshot: turn.snapshot, budget: { contextTokens: model.limit.context, outputTokens, safetyTokens, memoryBytes } }), { parentId: activeOperation, sessionId: event.sessionID });
             const previousError = store.get("adapterErrors", event.sessionID);
             if (previousError && ["MEMORY_NOT_READY", "REVERT_PENDING", "TURN_ACTIVE"].includes(previousError.code))
               store.remove("adapterErrors", event.sessionID);
@@ -1430,9 +1610,10 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
             await operation(() => Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now()))));
           }
         }
-      }, controller.signal);
+      }, controller.signal, "primary.context", { sessionId: event.sessionID });
       event.system = result.system;
       event.messages = result.messages;
+      diagnostics.emit("primary.ready", { sessionId: event.sessionID });
     } finally {
       clearTimeout(timer);
     }
@@ -1470,8 +1651,12 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const controller = new AbortController;
   const events = (async () => {
     for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+      const handle = (fn) => {
+        diagnostics.emit("event.received", { eventType: event.type, sessionId: event.data.sessionID });
+        return serial(fn, undefined, event.type, { sessionId: event.data.sessionID, eventType: event.type });
+      };
       if (event.type === "agent.updated")
-        await serial(async () => {
+        await handle(async () => {
           for (const s of store.all("sessions"))
             if (!s.disabled) {
               try {
@@ -1486,14 +1671,14 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         continue;
       const id = data.sessionID;
       if (event.type === "session.deleted")
-        await serial(async () => {
+        await handle(async () => {
           if (store.get("sessions", id))
             engine.retire(id, "delete");
           store.remove("adapter", id);
           store.remove("checkpoints", id);
         });
       else if (["session.revert.committed", "session.message.content.updated", "session.moved", "session.permissions", "session.agent.selected"].includes(event.type))
-        await serial(async () => {
+        await handle(async () => {
           if (store.get("sessions", id)) {
             try {
               await reconcile(id);
@@ -1503,7 +1688,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           }
         });
       else if (["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"].includes(event.type))
-        await serial(async () => {
+        await handle(async () => {
           if (!store.get("sessions", id) && (!ctx.location || event.location?.directory !== ctx.location.directory))
             return;
           try {
@@ -1519,11 +1704,14 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         disable(s.id, `Event stream failed: ${String(error)}`);
     }
   });
+  diagnostics.emit("runtime.ready");
   return async () => {
+    diagnostics.emit("shutdown.request");
     stopped = true;
     controller.abort();
     await events;
     await tail;
+    diagnostics.close();
     store.close();
   };
 } });
@@ -1532,4 +1720,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=03891F8EF599932A64756E2164756E21
+//# debugId=5689545D20F6D5E264756E2164756E21

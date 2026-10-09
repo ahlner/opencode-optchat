@@ -3,4 +3,5 @@ node_modules/
 coverage/
 .optchat/
 *.sqlite*
+*.diagnostics.ndjson*
 evaluation-results.json

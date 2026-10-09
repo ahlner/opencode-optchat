@@ -175,7 +175,13 @@ try {
      holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
      await api("POST", `/api/session/${c.id}/prompt`, { text: "RESUME_AFTER_SLOW_HISTORY" });
      await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "primary admission resumes after cancellation");
-     assert.equal((db!.query("SELECT count(*) AS n FROM entities WHERE bucket='sessions' AND json_extract(value,'$.disabled') IS NOT NULL").get() as { n: number }).n, 0);
+      assert.equal((db!.query("SELECT count(*) AS n FROM entities WHERE bucket='sessions' AND json_extract(value,'$.disabled') IS NOT NULL").get() as { n: number }).n, 0);
+      const diagnosticText = await Bun.file(`${dbPath}.diagnostics.ndjson`).text();
+      const diagnosticRows = diagnosticText.trim().split("\n").map(line => JSON.parse(line));
+      assert(diagnosticRows.some(row => row.event === "job.release"), "Cancelled claims are visible in diagnostics");
+      assert(diagnosticRows.some(row => row.phase === "compactor.generate" && row.event === "phase.start"), "Actual model waits have diagnostic phases");
+      assert(diagnosticRows.some(row => row.phase === "primary.context" && row.errorCode === "MEMORY_NOT_READY"), "Admission failures have sanitized diagnostic codes");
+      assert(!/PAIR_OK|A_DECISION|BLOCKED_BY_SLOW_HISTORY|RESUME_AFTER_SLOW_HISTORY/.test(diagnosticText), "Diagnostics exclude original and model payloads");
       console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "slow-history deadline", "cancelled claims and available settings", "admission resumes without retirement"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();

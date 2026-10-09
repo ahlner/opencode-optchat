@@ -370,10 +370,19 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
+    const report = (event) => {
+      try {
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil });
+      } catch {}
+    };
+    report("job.claim");
     const renewal = setInterval(() => {
       try {
-        this.store.renew(job, this.options.leaseMs);
-      } catch {}
+        if (!this.store.renew(job, this.options.leaseMs))
+          report("job.renew.unowned");
+      } catch {
+        report("job.renew.error");
+      }
     }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
     renewal.unref();
     try {
@@ -430,15 +439,19 @@ class Engine {
         }
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
+      report("job.done");
     } catch (error) {
       if (signal?.aborted) {
         this.store.release(job);
+        report("job.release");
         throw signal.reason;
       }
       if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) {
         this.store.fail(job, error);
+        report("job.failed");
         throw error;
       }
+      report("job.unowned");
     } finally {
       clearInterval(renewal);
     }
@@ -821,4 +834,4 @@ export {
   turnKey
 };
 
-//# debugId=184CC131168777DC64756E2164756E21
+//# debugId=6A2A3633E0988A3164756E2164756E21

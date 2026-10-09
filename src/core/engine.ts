@@ -6,7 +6,7 @@ import { rangeCover, validateCover } from "./tree.ts";
 import { mergeView, project } from "./views.ts";
 
 interface Scope { id: string; epoch: number; policy: number; highWater: number }
-export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number }
+export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number }) => void }
 const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
 export class Engine {
   readonly options: EngineOptions;
@@ -164,9 +164,11 @@ export class Engine {
     signal?.throwIfAborted();
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job) return false;
+    const report = (event: string) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil }); } catch {} };
+    report("job.claim");
     const renewal = setInterval(() => {
-      try { this.store.renew(job, this.options.leaseMs); }
-      catch { /* The commit transaction checks the current fence again. */ }
+      try { if (!this.store.renew(job, this.options.leaseMs)) report("job.renew.unowned"); }
+      catch { report("job.renew.error"); /* The commit transaction checks the current fence again. */ }
     }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
     renewal.unref();
     try {
@@ -207,10 +209,12 @@ export class Engine {
         }
         this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
       });
+      report("job.done");
     } catch (error) {
       // Losing ownership is coordination, not a failed model call. Never fail the replacement job.
-      if (signal?.aborted) { this.store.release(job); throw signal.reason; }
-      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) { this.store.fail(job, error); throw error; }
+      if (signal?.aborted) { this.store.release(job); report("job.release"); throw signal.reason; }
+      if (!(error instanceof MemoryError && error.code === "LEASE_LOST")) { this.store.fail(job, error); report("job.failed"); throw error; }
+      report("job.unowned");
     }
     finally { clearInterval(renewal); }
     return true;

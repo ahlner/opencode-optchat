@@ -368,3 +368,43 @@ These tests do not certify other OpenCode versions or external organization poli
 The conservative budget does not require provider-specific tokenizers.
 Those tokenizers could improve budget use.
 SQLite search work remains data-dependent despite bounded result materialization and pagination.
+
+## Metadata-only diagnostic logging
+
+The owner reported apparent inactivity and requested logs from a real session.
+Session size alone does not establish the cause of that behavior.
+The new logger records queue waits, native API boundaries, ingestion, job ownership, model waits, and context assembly.
+Five-second heartbeats record active phases, job counters, and event-loop delay.
+Startup entries identify the loaded module by its SHA-256 hash.
+
+Deterministic tests check these properties:
+
+- A pending host request produces waiting entries and elapsed times.
+- Event-loop blocking produces a heartbeat delay.
+- Original payloads and raw provider errors do not enter the log.
+- Files use mode `0600` and retain one bounded rotated backup.
+- Concurrent runtimes reopen the current file after another runtime rotates it.
+- Symlink destinations do not receive log writes.
+- Observer failures do not change worker results.
+- Cancelled model work logs claim release and the sanitized admission error.
+
+`bun run check` passed TypeScript checks and 76 tests with 11,756 assertions.
+The private packed-plugin test passed all 23 lifecycle groups and 15 settings groups.
+The settings fixture also checked actual diagnostic model boundaries, claim release, admission failure, and payload exclusion.
+The native terminal test passed six checks without model calls.
+The dependency audit passed for 428 installed package instances with no bundled third-party source.
+
+The packed test retained these private diagnostic directories:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-sZPByF
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-AXuwSA
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-tui-nrdbFm
+```
+
+The settings log recorded model waits, cancelled claims, and matching installed-module hashes.
+After adding queue-to-session correlations, `bun run test:settings` passed all 15 groups again.
+That final run retained `/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-NdvCZp`.
+These tests do not establish the cause of the owner's session failure.
+The real-session trace remains necessary for that diagnosis.
+No existing user session, configuration, service, credential, or memory database changed during these tests.

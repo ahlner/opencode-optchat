@@ -58,6 +58,13 @@ test("cold history cancellation releases settings and discards a provider result
     await expect(hooks.context(request)).rejects.toThrow("MEMORY_NOT_READY");
     expect(performance.now() - started).toBeLessThan(500); expect(signal?.aborted).toBe(true); expect(calls).toBe(1);
     expect(request.system).toBe(system); expect(request.messages).toBe(messages);
+    const diagnosticText = await Bun.file(`${database}.diagnostics.ndjson`).text();
+    const diagnosticRows = diagnosticText.trim().split("\n").map(line => JSON.parse(line));
+    expect(diagnosticRows.some(r => r.phase === "compactor.generate" && r.event === "phase.start")).toBe(true);
+    expect(diagnosticRows.some(r => r.event === "job.release")).toBe(true);
+    expect(diagnosticRows.some(r => r.phase === "primary.context" && r.errorCode === "MEMORY_NOT_READY")).toBe(true);
+    expect(diagnosticRows.some(r => r.phase === "queue.wait" && r.sessionId === "cold-session")).toBe(true);
+    expect(diagnosticText).not.toContain("HISTORICAL_EVIDENCE"); expect(diagnosticText).not.toContain("LATE_RESULT_MUST_NOT_COMMIT");
     // The native settings guard must not retain a request after its deadline.
     await rpc.retry({});
     const store = new Store(database);

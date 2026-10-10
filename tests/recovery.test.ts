@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createRecoveryLoop, type RecoveryState } from "../src/adapters/opencode/recovery-loop.ts";
+import { MemoryError } from "../src/core/types.ts";
 
 const state = (): RecoveryState => ({ pending: 1, running: 0, expired: 0, failed: 0, progress: 0, paused: false });
 const settled = () => Bun.sleep(2);
@@ -65,4 +66,16 @@ test("multiple runtimes can share a stall limit that survives loop replacement",
     peer.tick(); replacement.tick(); await settled(); expect(calls).toBe(3);
     s.pending = 0; peer.tick(); expect(s.attempts).toBe(0); expect(s.paused).toBe(false);
   } finally { await peer.dispose(); await replacement.dispose(); }
+});
+
+test("pause records the last recovery error code for startup resume decisions", async () => {
+  const s = state(); let pauseCode: string | undefined;
+  const loop = createRecoveryLoop({ snapshot: () => ({ ...s }), busy: () => false, intervalMs: 100000,
+    run: async () => { throw new MemoryError("HOST_UNAVAILABLE", "host offline"); },
+    pause: code => { s.paused = true; pauseCode = code; }, reset() {} });
+  try {
+    for (let i = 0; i < 3; i++) { loop.tick(); await settled(); }
+    expect(pauseCode).toBe("HOST_UNAVAILABLE");
+    expect(s.paused).toBe(true);
+  } finally { await loop.dispose(); }
 });

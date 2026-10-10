@@ -1807,7 +1807,7 @@ async function setupSettings(ctx, start) {
     database: join2(process.env.XDG_DATA_HOME || join2(homedir3(), ".local", "share"), "optchat", identity, "memory.sqlite"),
     memoryBytes: 16000,
     safetyTokens: 2048,
-    waitMs: 30000,
+    waitMs: 120000,
     captureContent: false,
     summaryAcceptBytes: defaultSummaryAcceptBytes
   };
@@ -2165,7 +2165,7 @@ class Diagnostics {
 
 // src/adapters/opencode/recovery-loop.ts
 function createRecoveryLoop(options) {
-  let stopped = false, stalls = 0, observedPause = false, task, controller;
+  let stopped = false, stalls = 0, observedPause = false, task, controller, lastErrorCode = "ERROR";
   const schedule = () => {
     if (stopped || task || options.busy())
       return;
@@ -2190,7 +2190,9 @@ function createRecoveryLoop(options) {
     task = (async () => {
       try {
         await options.run(controller.signal);
-      } catch {} finally {
+      } catch (error) {
+        lastErrorCode = error instanceof Error && "code" in error && typeof error.code === "string" && /^[A-Z_]{1,64}$/.test(error.code) ? error.code : "ERROR";
+      } finally {
         if (!stopped && !controller.signal.aborted) {
           const after = options.snapshot();
           if (after.progress > before.progress || !after.pending) {
@@ -2201,7 +2203,7 @@ function createRecoveryLoop(options) {
               options.completed(false);
             else if (++stalls >= (options.maxStalls ?? 3)) {
               observedPause = true;
-              options.pause();
+              options.pause(lastErrorCode);
             }
           }
         }
@@ -2237,7 +2239,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(config.database && isAbsolute2(config.database), "CONFIG", "Set an absolute database path");
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
   const scopeId = automaticScope(ctx.location?.project?.id ?? "global", ctx.location?.project?.canonical);
-  const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
+  const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 120000;
   const compactorConcurrency = config.compactorConcurrency ?? 2;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
   insist(Number.isSafeInteger(compactorConcurrency) && compactorConcurrency >= 1 && compactorConcurrency <= 8, "CONFIG", "Compactor concurrency must be between 1 and 8");
@@ -2688,6 +2690,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         }
       }
   };
+  let lastRecoveryError;
+  const transientPauseReasons = new Set(["HOST_UNAVAILABLE", "MEMORY_NOT_READY", "MEMORY_STALLED"]);
   const recovery = createRecoveryLoop({
     busy: () => stopped || queued > 0 || activeOperation !== undefined,
     snapshot: () => {
@@ -2724,11 +2728,13 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         await reconcileKnown();
         await compact();
       } catch (error) {
-        diagnostics.emit("recovery.error", { errorCode: error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE" });
+        lastRecoveryError = error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE";
+        diagnostics.emit("recovery.error", { errorCode: lastRecoveryError });
         throw error;
       }
     }, signal, "background.recovery"),
-    pause: () => {
+    pause: (errorCode) => {
+      lastRecoveryError = errorCode;
       store.set("settings", "backgroundRecovery", { paused: true });
       diagnostics.emit("recovery.paused", { attempt: 3 });
     },
@@ -2739,7 +2745,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           return 0;
         }
         const attempts = (store.get("settings", "backgroundRecovery")?.stalls ?? 0) + 1;
-        store.set("settings", "backgroundRecovery", { stalls: attempts, paused: attempts >= 3 });
+        store.set("settings", "backgroundRecovery", { stalls: attempts, paused: attempts >= 3, pauseReason: lastRecoveryError });
         return attempts;
       });
       if (attempts >= 3)
@@ -2747,6 +2753,13 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     },
     reset: () => store.remove("settings", "backgroundRecovery")
   });
+  {
+    const state = store.get("settings", "backgroundRecovery");
+    if (state?.paused && (!state.pauseReason || transientPauseReasons.has(state.pauseReason))) {
+      store.remove("settings", "backgroundRecovery");
+      diagnostics.emit("recovery.resumed", { attempt: state.pauseReason ? 1 : 0 });
+    }
+  }
   const foreground = async (fn, signal, phase, sessionId) => {
     primaryPriority++;
     recovery.interrupt();
@@ -2963,4 +2976,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=8D1D89848BDAEE0264756E2164756E21
+//# debugId=C5952340FC12813864756E2164756E21

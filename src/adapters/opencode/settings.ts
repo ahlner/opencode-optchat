@@ -17,7 +17,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
   const identity = scopeId.slice("local:".length);
   const defaults: Settings = {
     enabled: false, database: join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "optchat", identity, "memory.sqlite"),
-    memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false, summaryAcceptBytes: defaultSummaryAcceptBytes,
+    memoryBytes: 16000, safetyTokens: 2048, waitMs: 120000, captureContent: false, summaryAcceptBytes: defaultSummaryAcceptBytes,
   };
   let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } as Settings :
     { ...defaults, ...await ctx.storage.get("settings.v1") as Partial<Settings> };

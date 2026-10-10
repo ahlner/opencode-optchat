@@ -60,7 +60,7 @@ The dialog shows a snapshot. The status bar refreshes automatically.
 
 Temporary provider failures permit four attempts within the shared deadline.
 Retries respect supported provider delay metadata, including `Retry-After` seconds and dates.
-Delays above 30 seconds stop the request instead of shortening the provider's delay.
+The shared deadline covers the whole preparation sequence. The default `waitMs` is 120000 milliseconds.
 Failed jobs still require the existing recovery procedure.
 
 Invalid summaries permit five correction attempts within the background deadline.
@@ -120,8 +120,8 @@ A new primary prompt checks available memory without generating summaries.
 The adapter permits one active preparation worker per database, across worker connections.
 That worker can claim several leaf or parent jobs for one sequential model request.
 It retries explicit rate limits and recognizable temporary provider failures up to three times after the initial request.
-Retry delays increase from one to four seconds and respect longer provider delays up to 30 seconds.
-The requests and delays share one `waitMs` deadline.
+Retry delays increase from one to four seconds and respect longer provider delays.
+The requests and delays share one `waitMs` deadline. The default `waitMs` is 120000 milliseconds.
 
 Invalid credentials, denied access, disabled or unknown models, and invalid summary responses do not receive these provider retries.
 Exhausted retries still leave failed jobs for operator review. There is no infinite availability retry loop.
@@ -292,7 +292,7 @@ Explicit options take precedence. The TUI does not overwrite them.
         "compactorModel": { "providerID": "YOUR-PROVIDER", "id": "YOUR-MODEL" },
         "memoryBytes": 16000,
         "safetyTokens": 2048,
-        "waitMs": 30000
+        "waitMs": 120000
       }
     }
   ]

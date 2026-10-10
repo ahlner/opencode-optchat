@@ -11,7 +11,7 @@ export declare function createRecoveryLoop(options: {
     snapshot: () => RecoveryState;
     busy: () => boolean;
     run: (signal: AbortSignal) => Promise<void>;
-    pause: () => void;
+    pause: (errorCode: string) => void;
     reset: () => void;
     completed?: (madeProgress: boolean) => void;
     intervalMs?: number;

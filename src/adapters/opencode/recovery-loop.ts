@@ -13,13 +13,13 @@ export function createRecoveryLoop(options: {
   snapshot: () => RecoveryState;
   busy: () => boolean;
   run: (signal: AbortSignal) => Promise<void>;
-  pause: () => void;
+  pause: (errorCode: string) => void;
   reset: () => void;
   completed?: (madeProgress: boolean) => void;
   intervalMs?: number;
   maxStalls?: number;
 }) {
-  let stopped = false, stalls = 0, observedPause = false, task: Promise<void> | undefined, controller: AbortController | undefined;
+  let stopped = false, stalls = 0, observedPause = false, task: Promise<void> | undefined, controller: AbortController | undefined, lastErrorCode = "ERROR";
   const schedule = () => {
     if (stopped || task || options.busy()) return;
     const before = options.snapshot();
@@ -30,14 +30,14 @@ export function createRecoveryLoop(options: {
     controller = new AbortController();
     task = (async () => {
       try { await options.run(controller!.signal); }
-      catch { /* The adapter records sanitized operational errors. */ }
+      catch (error) { lastErrorCode = error instanceof Error && "code" in error && typeof (error as { code?: unknown }).code === "string" && /^[A-Z_]{1,64}$/.test((error as { code: string }).code) ? (error as { code: string }).code : "ERROR"; }
       finally {
         if (!stopped && !controller!.signal.aborted) {
           const after = options.snapshot();
           if (after.progress > before.progress || !after.pending) { stalls = 0; options.completed?.(true); }
           else if (!after.running && !after.failed) {
             if (options.completed) options.completed(false);
-            else if (++stalls >= (options.maxStalls ?? 3)) { observedPause = true; options.pause(); }
+            else if (++stalls >= (options.maxStalls ?? 3)) { observedPause = true; options.pause(lastErrorCode); }
           }
         }
       }

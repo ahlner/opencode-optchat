@@ -745,7 +745,7 @@ Additional leaf batching reduced model calls from 21 to 7. This is not a univers
 Tests cover unpublished evidence, separate turns, oversized originals, cancellation, revocation, partial retirement, and peer-selection failures.
 
 Recognizable temporary provider failures now permit three additional attempts with one shared deadline.
-Backoff increases from one to four seconds and respects longer provider delays up to 30 seconds.
+Backoff increases from one to four seconds and respects longer provider delays.
 Authorization, credential, disabled-model, and invalid-summary failures do not receive these provider retries.
 Exhausted retries remain failed. Startup can recover matching cached availability failures once per scope without clearing a background pause.
 

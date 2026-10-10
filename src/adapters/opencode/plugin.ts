@@ -25,7 +25,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
   // The trust scope comes from the host project. The TUI settings path injects it; direct setups derive it here.
   const scopeId = automaticScope(ctx.location?.project?.id ?? "global", ctx.location?.project?.canonical);
-  const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
+  const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 120000;
   // Concurrent compactor runners process independent trees in parallel. Keep the default small to respect provider rate limits.
   const compactorConcurrency = config.compactorConcurrency ?? 2;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
@@ -383,6 +383,9 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       }
     }
   };
+  // The last recovery error decides whether a startup reset may clear a persisted pause.
+  let lastRecoveryError: string | undefined;
+  const transientPauseReasons = new Set(["HOST_UNAVAILABLE", "MEMORY_NOT_READY", "MEMORY_STALLED"]);
   const recovery = createRecoveryLoop({
     busy: () => stopped || queued > 0 || activeOperation !== undefined,
     snapshot: () => {
@@ -403,19 +406,28 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         for (const pending of store.all<{ sessionId: string }>("preparingSessions")) if (!store.get<Session>("sessions", pending.sessionId)?.disabled) await reconcile(pending.sessionId as Parameters<typeof reconcile>[0]);
         await reconcileKnown(); await compact();
       }
-      catch (error) { diagnostics.emit("recovery.error", { errorCode: error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE" }); throw error; }
+      catch (error) { lastRecoveryError = error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE"; diagnostics.emit("recovery.error", { errorCode: lastRecoveryError }); throw error; }
     }, signal, "background.recovery"),
-    pause: () => { store.set("settings", "backgroundRecovery", { paused: true }); diagnostics.emit("recovery.paused", { attempt: 3 }); },
+    pause: errorCode => { lastRecoveryError = errorCode; store.set("settings", "backgroundRecovery", { paused: true }); diagnostics.emit("recovery.paused", { attempt: 3 }); },
     completed: madeProgress => {
       const attempts = store.transaction(() => {
         if (madeProgress) { store.remove("settings", "backgroundRecovery"); return 0; }
         const attempts = (store.get<{ stalls?: number }>("settings", "backgroundRecovery")?.stalls ?? 0) + 1;
-        store.set("settings", "backgroundRecovery", { stalls: attempts, paused: attempts >= 3 }); return attempts;
+        store.set("settings", "backgroundRecovery", { stalls: attempts, paused: attempts >= 3, pauseReason: lastRecoveryError }); return attempts;
       });
       if (attempts >= 3) diagnostics.emit("recovery.paused", { attempt: attempts });
     },
     reset: () => store.remove("settings", "backgroundRecovery"),
   });
+  {
+    // A persisted pause from a transient failure must not survive a restart.
+    // Failures that can bill model calls, such as COMPACTION_FAILED, keep the pause.
+    const state = store.get<{ paused?: boolean; pauseReason?: string }>("settings", "backgroundRecovery");
+    if (state?.paused && (!state.pauseReason || transientPauseReasons.has(state.pauseReason))) {
+      store.remove("settings", "backgroundRecovery");
+      diagnostics.emit("recovery.resumed", { attempt: state.pauseReason ? 1 : 0 });
+    }
+  }
   const foreground = async <T>(fn: () => Promise<T>, signal: AbortSignal | undefined, phase: string, sessionId: string) => {
     primaryPriority++; recovery.interrupt();
     if (activeController && !["primary.context", "memory.tool"].includes(activePhase ?? "")) activeController.abort(new MemoryError("MEMORY_NOT_READY", "Foreground access preempted preparation"));

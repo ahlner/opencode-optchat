@@ -198,7 +198,7 @@ The compressed response may contain only facts that the original evidence suppor
 The adapter limits atomic claims to one unexpired running job per database.
 The standalone engine retains its default parallel worker support.
 Explicit rate limits and recognizable temporary provider failures permit three additional model attempts with increasing delays and one shared request deadline.
-The adapter respects provider delays up to 30 seconds. Longer delays leave the job failed.
+The shared request deadline comes from `waitMs`. The default `waitMs` is 120000 milliseconds.
 
 Permanent authorization, credential, and model-configuration errors do not receive availability retries.
 Cancellation stops retry waits and releases matching claims. Exhausted retries leave failed jobs for review.

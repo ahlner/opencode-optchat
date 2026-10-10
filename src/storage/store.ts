@@ -78,6 +78,20 @@ export class Store {
     const row = this.db.query("SELECT fence,status,leaseUntil FROM jobs WHERE id=?").get(job.id) as Pick<Job, "fence" | "status" | "leaseUntil"> | null;
     return row?.fence === job.fence && row.status === "running" && row.leaseUntil > Date.now();
   }
+  claimParentPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[] {
+    if (anchor.input.type !== "parent") return [];
+    const tree = anchor.input.tree;
+    return this.transaction(() => {
+      const now = Date.now();
+      if (!this.db.query("SELECT 1 FROM jobs WHERE id=? AND fence=? AND status='running' AND ownerToken=? AND leaseUntil>?").get(anchor.id, anchor.fence, this.owner, now)) return [];
+      const rows = this.db.query("SELECT * FROM jobs WHERE status='pending' AND json_extract(input,'$.type')='parent' AND json_extract(input,'$.tree')=? AND json_extract(input,'$.start')>=? AND json_extract(input,'$.start')+json_extract(input,'$.count')<=? ORDER BY rowid LIMIT ?").all(tree, start, end, Math.max(0, Math.min(15, limit))) as (Omit<Job, "input"> & { input: string })[];
+      return rows.map(row => {
+        const fence = row.fence + 1;
+        this.db.query("UPDATE jobs SET status='running',fence=?,leaseUntil=?,attempts=attempts+1,ownerPid=?,ownerToken=? WHERE id=?").run(fence, now + leaseMs, process.pid, this.owner, row.id);
+        return { ...row, input: JSON.parse(row.input), fence, leaseUntil: now + leaseMs, attempts: row.attempts + 1, status: "running" as const };
+      });
+    });
+  }
   renew(job: Job, leaseMs: number, now = Date.now()): boolean {
     return this.db.query("UPDATE jobs SET leaseUntil=? WHERE id=? AND fence=? AND status='running' AND leaseUntil>?").run(now + leaseMs, job.id, job.fence, now).changes === 1;
   }

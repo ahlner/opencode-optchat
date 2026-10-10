@@ -82,6 +82,16 @@ Skip failed jobs and live worker claims.
 Interrupt background work for primary admission.
 
 Primary admission must not generate summaries or wait for backfill.
+
+Keep full originals when projecting audit data for summarization.
+Batch only ready parents from the same completed turn. Check every item ID and byte limit.
+
+Retain each job's fence. Cancel all matching batch claims and reject replaced or revoked claims.
+Authorize each node's complete batch evidence range, not only its dyadic coordinates.
+
+Prefix retirement must exclude summaries that saw the removed suffix.
+Repair rejected cached evidence by rebuilding derived nodes, never by modifying originals or overwriting immutable summaries.
+
 Select native mode when complete memory is unavailable for a new turn.
 Preserve the native conversation and tool protocol. Remove memory tools and add an explicit unavailable notice.
 

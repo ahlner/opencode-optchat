@@ -12,6 +12,7 @@ export interface Node {
   id: string; tree: string; start: number; count: number; text: string;
   inputs: string[]; children: string[]; source?: string; publicationId?: string;
   model: string; promptVersion: string; bytes: number; fallback: boolean;
+  evidenceStart?: number; evidenceEnd?: number;
 }
 export interface Publication {
   id: string; scopeId: string; publicationSeq: number; sessionId: string;

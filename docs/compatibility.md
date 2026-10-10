@@ -42,6 +42,8 @@ The tests do not establish support for other operating systems or providers.
 | Slow preparation cancellation | Non-cooperative model fixture, released claims, available settings, and resumed native admission |
 | Automatic preparation continuation | Timer resumes a released job without another native prompt or event. Failed jobs require confirmed retry |
 | Cold existing-session input | Native mode preserves own history while summaries remain unavailable. Admission does not generate summaries |
+| Compactor parent batches | Checked item IDs, independent size limits, batch cancellation, retention fences, and actual host requests |
+| Invalid cached summaries | Derived-memory reconstruction retains originals and unaffected publication order |
 
 Support applies only to the checked V2 boundaries.
 The adapter rejects a foreign compaction marker without an original checkpoint.

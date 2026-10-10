@@ -90,7 +90,8 @@ Cancellation cannot reverse charges for requests that the provider already recei
 Agent and terminal events do not bypass the pause.
 A new primary prompt checks available memory without generating summaries.
 
-The adapter permits one unexpired compactor job per database, across worker connections.
+The adapter permits one active preparation worker per database, across worker connections.
+That worker can claim several parent jobs for one sequential model request.
 It retries explicit rate limits at most three times after the initial request.
 Retry delays increase from one to four seconds and respect longer provider delays up to 30 seconds.
 The requests and delays share one `waitMs` deadline.
@@ -98,6 +99,32 @@ Other model errors still leave failed jobs for operator review.
 
 Summaries must still fit 512 UTF-8 bytes.
 These limits reduce request bursts. They do not guarantee a completion time for large archives.
+
+### Compactor efficiency and output checks
+
+The adapter summarizes a projection of each original, not a replacement original.
+Routine audit projections omit token counts, costs, timestamps, model bookkeeping, and unchanged snapshot hashes.
+Recorded errors, retries, changed-file lists, tool inputs, and tool results remain available to the summarizer.
+The source tool retains the complete original audit payload.
+
+Ready parent jobs from the same completed turn can share a structured request.
+The batch limit is eight jobs, reduced when the configured model has a smaller output limit.
+The adapter discovers that limit during background work, not during startup.
+It never batches different turns or shared publication ranges together.
+Each response must contain every expected item ID exactly once and respect each item's 512-byte limit.
+
+Every claimed job retains its own fence and cancellation handling.
+Summary authorization includes the wider evidence range exposed by the batch.
+Partial retirement discards summaries that saw evidence beyond the retained prefix.
+The status can show several claimed jobs even though their model requests run sequentially.
+
+Selected checks reject drafting notes, absent-category boilerplate, and the observed tool-result absence claims.
+These checks do not prove complete semantic correctness.
+Startup removes matching old generated summaries and dependent derived memory, then schedules reconstruction.
+It retains originals and unaffected publication order, but revokes affected snapshots.
+Reconstruction can incur model costs. It does not overwrite summaries in place.
+
+Existing background pauses still require confirmed retry.
 
 The lease fix recovers an expired lease only when its fence remains unchanged.
 A worker that another worker or retention change replaced discards its result.

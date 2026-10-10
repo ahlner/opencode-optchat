@@ -1,22 +1,36 @@
 import { Store } from "../storage/store.ts";
 import { abortable } from "./abort.ts";
-import { chunks, FakeSummarizer, type Summarizer } from "../compactor/summarizer.ts";
+import { chunks, FakeSummarizer, validSummary, type Summarizer } from "../compactor/summarizer.ts";
 import { MemoryError, bytes, hash, insist, key, sessionTree, sharedTree, sourceKey, turnKey, type Job, type Node, type Outcome, type Publication, type Session, type Snapshot, type SourceInput, type SourceRecord, type Turn, type View } from "./types.ts";
 import { rangeCover, validateCover } from "./tree.ts";
 import { mergeView, project } from "./views.ts";
 
 interface Scope { id: string; epoch: number; policy: number; highWater: number }
+// Originals remain unchanged. Only the summarization projection omits routine audit overhead.
+export function evidenceInput(record: SourceRecord): string {
+  let payload: any; try { payload = JSON.parse(record.payload); } catch { return JSON.stringify({ kind: record.kind, payload: record.payload }); }
+  if (record.kind === "report" && !payload.command && !payload.output) {
+    const snapshot = payload.snapshot;
+    return JSON.stringify({ kind: "audit", finish: payload.finish, error: payload.error, retry: payload.retry,
+      snapshotChanged: snapshot?.start !== undefined && snapshot?.end !== undefined ? snapshot.start !== snapshot.end : undefined,
+      changedFiles: snapshot?.files?.length ? snapshot.files : undefined });
+  }
+  if (record.kind === "tool_call") return JSON.stringify({ kind: record.kind, name: payload.name, input: payload.input, resultLocation: "Separate original tool_result record; this call is not evidence of an absent result" });
+  if (record.kind === "tool_result") return JSON.stringify({ kind: record.kind, status: payload.status, content: payload.content, error: payload.error, metadata: payload.metadata, incomplete: payload.incomplete, truncated: record.truncated ?? false });
+  return JSON.stringify({ kind: record.kind, payload });
+}
 const jobFailureCode = (error: unknown) => {
   const text = String(error ?? "");
   return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
-export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string; sourceId?: string; tree?: string; start?: number; count?: number }) => void }
-const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER };
+export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; parentBatchSize: number; compactEvidence: boolean; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string; sourceId?: string; tree?: string; start?: number; count?: number; batchSize?: number }) => void }
+const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, compactEvidence: false };
 export class Engine {
   readonly options: EngineOptions;
   constructor(readonly store: Store, readonly summarizer: Summarizer = new FakeSummarizer(), options: Partial<EngineOptions> = {}) {
     this.options = { ...defaults, ...options };
     insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
+    insist(Number.isSafeInteger(this.options.parentBatchSize) && this.options.parentBatchSize >= 1 && this.options.parentBatchSize <= 16, "CONFIG", "Parent batch size must be between 1 and 16");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id: string): Scope {
@@ -137,6 +151,11 @@ export class Engine {
   }
   private writeNode(node: Node) {
     insist(node.bytes === bytes(node.text) && node.bytes <= 512 && !!node.text, "INVALID_SUMMARY", "Summary must be nonempty and at most 512 UTF-8 bytes");
+    if (node.tree.startsWith('["session"') && node.children.length) {
+      const children = node.children.map(id => this.node(id));
+      node.evidenceStart = Math.min(node.evidenceStart ?? node.start, ...children.map(n => n.evidenceStart ?? n.start));
+      node.evidenceEnd = Math.max(node.evidenceEnd ?? node.start + node.count, ...children.map(n => n.evidenceEnd ?? n.start + n.count));
+    }
     this.store.db.query("INSERT OR IGNORE INTO nodes VALUES(?,?,?,?,?)").run(node.id, node.tree, node.start, node.count, JSON.stringify(node));
     if (node.tree.startsWith('["chunk"')) return;
     const span = node.count, siblingStart = node.start % (span * 2) === 0 ? node.start + span : node.start - span;
@@ -172,10 +191,64 @@ export class Engine {
     const result = await abortable(() => this.summarizer.summarize(text, signal), signal);
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
+  private async workParentBatch(jobs: Job[], signal?: AbortSignal): Promise<boolean> {
+    const report = (job: Job, event: string, error?: unknown) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, batchSize: jobs.length, ...(job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : {}), ...(error === undefined ? {} : { errorCode: jobFailureCode(error) }) }); } catch {} };
+    for (const job of jobs) report(job, "job.claim");
+    report(jobs[0]!, "job.batch");
+    const renewal = setInterval(() => { for (const job of jobs) { try { if (!this.store.renew(job, this.options.leaseMs)) report(job, "job.renew.unowned"); } catch { report(job, "job.renew.error"); } } }, Math.max(1, Math.floor(this.options.leaseMs / 3)));
+    renewal.unref();
+    try {
+      const inputs = jobs.map(job => { insist(job.input.type === "parent", "JOB_SHAPE", "Only parent jobs can share a batch"); return this.parentInput(job.input.children); });
+      const evidenceNodes = jobs.flatMap(job => job.input.type === "parent" ? job.input.children.map(id => this.node(id)) : []);
+      const evidenceStart = Math.min(...evidenceNodes.map(node => node.evidenceStart ?? node.start));
+      const evidenceEnd = Math.max(...evidenceNodes.map(node => node.evidenceEnd ?? node.start + node.count));
+      const results = await abortable(() => this.summarizer.summarizeBatch!(inputs, signal, jobs.map(job => job.id)), signal);
+      signal?.throwIfAborted();
+      insist(results.length === jobs.length && results.every(r => r?.text?.trim() && bytes(r.text) <= 512), "SUMMARY_BATCH_INVALID", "Every parent requires a bounded summary");
+      const committed: Job[] = [];
+      this.store.transaction(() => {
+        for (const [index, job] of jobs.entries()) {
+          // Peer claims belong to one serialized provider request. Never accept a replaced fence.
+          if (!this.store.recoverLease(job, this.options.leaseMs, Date.now(), Math.min(Number.MAX_SAFE_INTEGER, this.options.maxRunningJobs + jobs.length - 1))) { report(job, "job.unowned"); continue; }
+          insist(job.input.type === "parent", "JOB_SHAPE", "Expected a parent job");
+          job.input.children.forEach(id => this.node(id));
+          const result = results[index]!;
+          this.writeNode({ id: hash(key(job.id, result, evidenceStart, evidenceEnd)), tree: job.input.tree, start: job.input.start, count: job.input.count, children: job.input.children, inputs: [hash(inputs[index]!), hash(JSON.stringify(inputs))], evidenceStart, evidenceEnd, ...result, bytes: bytes(result.text) });
+          this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
+          committed.push(job);
+        }
+      });
+      for (const job of committed) report(job, "job.done");
+    } catch (error) {
+      for (const job of jobs) {
+        if (signal?.aborted) { this.store.release(job); report(job, "job.release"); }
+        else { this.store.fail(job, error); report(job, "job.failed", error); }
+      }
+      throw signal?.aborted ? signal.reason : error;
+    } finally { clearInterval(renewal); }
+    return true;
+  }
+  private parentInput(children: string[]): string {
+    return children.map(id => {
+      const node = this.node(id);
+      if (this.options.compactEvidence && node.source) {
+        const record = this.source(node.source);
+        if (record.kind === "report") return evidenceInput(record);
+      }
+      return node.text;
+    }).join("\n");
+  }
   async workOne(signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted();
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job) return false;
+    if (job.input.type === "parent" && this.summarizer.summarizeBatch && this.options.parentBatchSize > 1) {
+      const input = job.input, tree = JSON.parse(input.tree);
+      const row = tree[0] === "session" ? this.store.db.query("SELECT value FROM entities WHERE bucket='turns' AND json_extract(value,'$.sessionId')=? AND json_extract(value,'$.generation')=? AND json_extract(value,'$.end') IS NOT NULL AND json_extract(value,'$.start')<=? AND json_extract(value,'$.end')>=? LIMIT 1").get(tree[1], tree[2], input.start, input.start + input.count) as { value: string } | null : null;
+      const turn = row ? JSON.parse(row.value) as Turn : undefined;
+      const peers = turn ? this.store.claimParentPeers(job, this.options.parentBatchSize - 1, this.options.leaseMs, turn.start, turn.end!) : [];
+      if (peers.length) return this.workParentBatch([job, ...peers], signal);
+    }
     const report = (event: string, error?: unknown) => { try { this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, ...(job.input.type === "leaf" ? { sourceId: job.input.source, tree: job.input.tree, start: job.input.start, count: 1 } : job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : {}), ...(error === undefined ? {} : { errorCode: jobFailureCode(error) }) }); } catch {} };
     report("job.claim");
     const renewal = setInterval(() => {
@@ -188,10 +261,10 @@ export class Engine {
       const input = job.input;
       if (input.type === "leaf") {
         const r = this.source(input.source); source = input.source; tree = input.tree; start = input.start; count = 1;
-        text = JSON.stringify({ kind: r.kind, timestamp: r.timestamp, turnId: r.turnId, callId: r.callId, truncated: r.truncated ?? false, payload: r.payload });
+        text = this.options.compactEvidence ? evidenceInput(r) : JSON.stringify({ kind: r.kind, timestamp: r.timestamp, turnId: r.turnId, callId: r.callId, truncated: r.truncated ?? false, payload: r.payload });
       } else if (input.type === "parent") {
         tree = input.tree; start = input.start; count = input.count; children = input.children;
-        text = children.map(id => this.node(id).text).join("\n");
+        text = this.parentInput(children);
       } else {
         const turn = this.store.get<Turn>("turns", input.turnKey);
         insist(turn?.outcome, "JOB_REVOKED", "Publication turn was retired");
@@ -236,6 +309,54 @@ export class Engine {
     throw new Error("Job drain exceeded its bound");
   }
   retryFailed() { this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run(); }
+  repairInvalidSummaries(scopeId: string): number {
+    return this.store.transaction(() => {
+      const nodes = (this.store.db.query("SELECT value FROM nodes").all() as { value: string }[]).map(r => JSON.parse(r.value) as Node);
+      const belongs = (n: Node) => { const tree = JSON.parse(n.tree); return tree[0] === "shared" ? tree[1] === scopeId : tree[0] === "session" && this.store.get<Session>("sessions", tree[1])?.scopeId === scopeId; };
+      const bad = new Set(nodes.filter(n => {
+        if (!belongs(n) || ["lossless-local", "deterministic-fixture"].includes(n.model)) return false;
+        if (!validSummary(n.text, "")) return true;
+        if (!n.tree.startsWith('["session"') || validSummary(n.text, "tool_call")) return false;
+        const [, sessionId, generation] = JSON.parse(n.tree);
+        return !!this.store.db.query("SELECT 1 FROM sources WHERE session=? AND generation=? AND seq>=? AND seq<? AND json_extract(value,'$.kind')='tool_call' LIMIT 1").get(sessionId, generation, n.evidenceStart ?? n.start, n.evidenceEnd ?? n.start + n.count);
+      }).map(n => n.id));
+      if (!bad.size) return 0;
+      let changed = true;
+      while (changed) { changed = false; for (const n of nodes) if (!bad.has(n.id) && [...n.children, ...n.inputs].some(id => bad.has(id))) { bad.add(n.id); changed = true; } }
+      const scope = this.scope(scopeId), oldTree = sharedTree(scopeId, scope.epoch);
+      const publications = this.store.all<Publication>("publications").filter(p => p.scopeId === scopeId);
+      const retired = publications.filter(p => bad.has(p.nodeId) || p.sourceCover.some(id => bad.has(id)));
+      const retained = publications.filter(p => !retired.includes(p)).sort((a, b) => a.publicationSeq - b.publicationSeq).map(p => ({ p, n: this.node(p.nodeId) }));
+      const ranges = new Set(nodes.filter(n => bad.has(n.id)).map(n => key(n.tree, n.start, n.count)));
+      for (const row of this.store.db.query("SELECT id,input FROM jobs").all() as { id: string; input: string }[]) {
+        const input = JSON.parse(row.input) as Job["input"];
+        const dependencyChanged = input.type === "parent" ? input.children.some(id => bad.has(id)) : input.type === "publication" && input.cover.some(id => bad.has(id));
+        const rebuild = dependencyChanged || (input.type === "publication" ? retired.some(p => key(p.sessionId, p.generation, p.turnId) === input.turnKey)
+          : ranges.has(key(input.tree, input.start, input.type === "leaf" ? 1 : input.count)));
+        if (rebuild) {
+          this.store.db.query("UPDATE jobs SET status=?,fence=fence+1,leaseUntil=0,error=NULL WHERE id=?").run(dependencyChanged ? "revoked" : "pending", row.id);
+          this.store.db.query("DELETE FROM nodes WHERE tree LIKE ?").run(`["chunk","${row.id}",%`);
+        } else if (input.type === "parent" && input.tree === oldTree) this.store.db.query("UPDATE jobs SET status='revoked',fence=fence+1 WHERE id=?").run(row.id);
+      }
+      for (const p of retired) { this.store.remove("publications", p.id); this.store.remove("publicationsByTurn", key(p.sessionId, p.generation, p.turnId)); }
+      for (const id of bad) this.store.db.query("DELETE FROM nodes WHERE id=?").run(id);
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(oldTree); this.store.remove("views", oldTree);
+      for (const snap of this.store.all<Snapshot>("snapshots")) if (snap.scopeId === scopeId) this.store.remove("snapshots", snap.id);
+      scope.epoch++; this.store.set("scopes", scope.id, scope);
+      const trees = new Set(nodes.filter(n => bad.has(n.id) && n.tree !== oldTree && belongs(n)).map(n => n.tree));
+      for (const tree of trees) {
+        const revision = this.view(tree).revision + 1;
+        this.store.set("views", tree, { tree, revision, prefix: 0, nodes: [], shrinking: false });
+        for (const n of nodes.filter(n => n.tree === tree && !bad.has(n.id)).sort((a, b) => a.count - b.count || a.start - b.start)) this.writeNode(n);
+      }
+      for (const { p, n } of retained) {
+        const tree = sharedTree(scope.id, scope.epoch), rebuilt = { ...n, id: hash(key(n.id, tree)), tree, start: this.view(tree).prefix };
+        p.nodeId = rebuilt.id; this.store.set("publications", p.id, p); this.writeNode(rebuilt);
+      }
+      this.schedulePublications();
+      return bad.size;
+    });
+  }
   markInherited(sessionId: string, id: string) {
     const s = this.session(sessionId), tk = key(sessionId, s.generation, id);
     const turn = this.store.get<Turn>("turns", tk);
@@ -259,7 +380,7 @@ export class Engine {
       const retiredSources = this.sources(sessionId, session.generation);
       insist(Number.isSafeInteger(preserve) && preserve >= 0 && preserve <= retiredSources.length && (mode !== "delete" || preserve === 0), "INVALID_BOUNDARY", "Invalid retirement prefix");
       const prefix = retiredSources.slice(0, preserve);
-      const prefixNodes = (this.store.db.query("SELECT value FROM nodes WHERE tree=? ORDER BY count,start").all(sessionTree(sessionId, session.generation)) as { value: string }[]).map(r => JSON.parse(r.value) as Node).filter(n => n.start + n.count <= preserve);
+      const prefixNodes = (this.store.db.query("SELECT value FROM nodes WHERE tree=? ORDER BY count,start").all(sessionTree(sessionId, session.generation)) as { value: string }[]).map(r => JSON.parse(r.value) as Node).filter(n => (n.evidenceEnd ?? n.start + n.count) <= preserve);
       const prefixTurns = this.store.all<Turn>("turns").filter(t => t.sessionId === sessionId && t.generation === session.generation && t.start < preserve);
       for (const checkpoint of this.store.all<{ id: string; sessionId: string }>("checkpoints")) if (checkpoint.sessionId === sessionId) this.store.remove("checkpoints", checkpoint.id);
       this.store.remove("adapterErrors", sessionId);

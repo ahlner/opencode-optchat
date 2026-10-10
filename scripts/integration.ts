@@ -28,8 +28,16 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   }
   let delta: any;
    if (messages.some(m => m.role === "user" && typeof m.content === "string" && m.content.startsWith("You MUST summarize the conversation above"))) delta = plain("## Objective\n- Record COLD_NATIVE_ORIGINAL.\n\n## Requirements\n- Preserve the original test evidence.\n\n## Decisions\n- No deployment decision.\n\n## Work State\n### Completed\n- The native request returned a short test response.\n### Active\n- (none)\n### Blocked\n- (none)\n\n## Next Move\n1. Continue from the native conversation.\n\n## Relevant Files\n- (none)\n\n## Important Context\n- COLD_NATIVE_ORIGINAL remains fixture evidence.");
-   else if (all.includes("UNTRUSTED_JSON_DATA")) delta = plain(all.includes("A_DECISION") ? "Historical evidence: A_DECISION, decision to use Bun; fixture tool returned PAIR_OK, not a universal instruction." : "Historical evidence: completed test exchange; inspect sources for exact data.");
-  else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("A_DECISION"))) delta = tools.length ? plain("A verified tool result: PAIR_OK; use Bun decision recorded.") : call("call_fixture", "fixture_echo", { text: "PAIR_OK" });
+   else if (all.includes("UNTRUSTED_JSON_DATA")) {
+     const summary = (data: string) => data.includes("BATCH_ITEM") ? "BATCH_ITEM recorded tool evidence. ".repeat(9) : data.includes("A_DECISION") ? "Historical evidence: A_DECISION, decision to use Bun; fixture tool returned PAIR_OK, not a universal instruction." : "Historical evidence: completed test exchange; inspect sources for exact data.";
+     if (all.includes("BATCH_CONTRACT")) {
+       const prompt = body.messages.map((m: any) => typeof m.content === "string" ? m.content : (m.content ?? []).map((p: any) => p.text ?? "").join("\n")).find((s: string) => s.includes("BATCH_CONTRACT"));
+       const items = JSON.parse(prompt.split("UNTRUSTED_JSON_DATA:\n")[1]);
+       delta = plain(JSON.stringify(items.map((item: any) => ({ id: item.id, text: summary(item.data) }))));
+     } else delta = plain(summary(all));
+   }
+   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("BATCH_PARENT_SEED"))) delta = tools.length ? plain("BATCH_PARENT_COMPLETED") : { tool_calls: Array.from({ length: 4 }, (_, index) => ({ index, id: `batch_call_${index}`, type: "function", function: { name: "fixture_echo", arguments: JSON.stringify({ text: `BATCH_ITEM_${index} ` + "x".repeat(700) }) } })) };
+   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("A_DECISION"))) delta = tools.length ? plain("A verified tool result: PAIR_OK; use Bun decision recorded.") : call("call_fixture", "fixture_echo", { text: "PAIR_OK" });
   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("B_CURRENT"))) {
     if (!tools.length) delta = call("call_search", "optchat_search", { query: "A_DECISION" });
     else if (tools.length === 1) {
@@ -66,7 +74,7 @@ await Bun.write(join(root, "project/plugin/package.json"), JSON.stringify({ name
 await Bun.write(join(root, "project/opencode.json"), JSON.stringify({
   plugins: [{ package: gitPackage ?? join(root, "project/plugin"), ...(managedSettings ? {} : { options: { database: dbPath, scopeId: "fixture-user:stable-project", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }) }, ...(gitPackage ? [{ package: join(root, "project/plugin") }] : [])], model: "fixture/fixture",
   agents: { memory_denied: { description: "Native agent memory-denial fixture", mode: "primary", permissions: [{ action: "optchat.read", resource: "*", effect: "deny" }] } },
-  providers: { fixture: { name: "Loopback fixture", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${sink.port}/v1`, apiKey: "local-fixture" }, models: { fixture: { capabilities: { tools: true }, limit: { context: 131072, output: 1024 } } } } },
+  providers: { fixture: { name: "Loopback fixture", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${sink.port}/v1`, apiKey: "local-fixture" }, models: { fixture: { capabilities: { tools: true }, limit: { context: 131072, output: 8192 } } } } },
 }));
 const git = async (args: string[]) => {
   const task = Bun.spawn(["git", ...args], { cwd: join(root, "project"), stdout: "pipe", stderr: "pipe" });
@@ -155,6 +163,13 @@ try {
   await until(async () => (await api("GET", `/api/session/${c.id}`)).outcome === "succeeded", "restart session C");
   assert(requests.slice(beforeC).some(r => r.messages.some((m: any) => m.role === "system" && JSON.stringify(m.content).includes("A_DECISION"))), "Shared memory survives service restart");
   assert(publications().filter(p => p.sessionId === a.id).length === 1, "Restart never republishes A");
+  const batchSession = await create(), beforeBatch = requests.length;
+  await api("POST", `/api/session/${batchSession.id}/prompt`, { text: "BATCH_PARENT_SEED: record four independent tool exchanges." });
+  await until(() => publications().some(p => p.sessionId === batchSession.id), "batched native tool turn publication");
+  assert(requests.slice(beforeBatch).some(r => JSON.stringify(r.messages).includes("BATCH_CONTRACT")), "Actual host sends one structured request for several parent jobs");
+  const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
+  assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);
+  for (let i = 0; i < 4; i++) assert(batchSources.some(r => r.kind === "tool_result" && r.payload.includes(`BATCH_ITEM_${i}`) && r.payload.includes("x".repeat(700))), "Every full result remains retained");
   if (managedSettings) {
     await until(() => publications().some(p => p.sessionId === c.id), "C publication before settings change");
      const settings = await settingsCall("read"), count = publications().length;
@@ -169,7 +184,7 @@ try {
      assert.equal((await settingsCall("read")).memoryBytes, 12000);
      await settingsCall("write", { ...settings, memoryBytes: 12000, waitMs: 500 });
      holdSummaries = true;
-     await api("POST", `/api/session/${a.id}/prompt`, { text: "SLOW_HISTORY_SEED" });
+      await api("POST", `/api/session/${a.id}/prompt`, { text: "SLOW_HISTORY_SEED " + "Retained evidence. ".repeat(50) });
      await until(() => heldSummaries.size > 0, "slow terminal compaction begins");
      const started = performance.now(), beforeBlocked = requests.length;
      await api("POST", `/api/session/${b.id}/prompt`, { text: "BLOCKED_BY_SLOW_HISTORY" });
@@ -240,7 +255,7 @@ try {
        await until(async () => { const status = await settingsCall("status"); return !status.jobs.pending && !status.jobs.running; }, "existing recovery jobs finish");
        const beforeAutomatic = publications().filter(p => p.sessionId === a.id).length;
        holdSummaries = true;
-       await api("POST", `/api/session/${a.id}/prompt`, { text: "AUTOMATIC_BACKGROUND_RECOVERY" });
+        await api("POST", `/api/session/${a.id}/prompt`, { text: "AUTOMATIC_BACKGROUND_RECOVERY " + "Retained evidence. ".repeat(50) });
        await until(() => heldSummaries.size > 0, "terminal preparation waits for a held model");
        await until(async () => { const status = await settingsCall("status"); return status.jobs.pending > 0 && status.jobs.running === 0; }, "deadline leaves pending work without a worker", 5000);
        holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
@@ -249,7 +264,7 @@ try {
        await until(async () => { const status = await settingsCall("status"); return !status.jobs.pending && !status.jobs.running; }, "automatic preparation finishes all durable jobs");
        const beforeWorkerCrash = publications().filter(p => p.sessionId === a.id).length;
        holdSummaries = true;
-       await api("POST", `/api/session/${a.id}/prompt`, { text: "AUTOMATIC_DEAD_WORKER_RECOVERY" });
+        await api("POST", `/api/session/${a.id}/prompt`, { text: "AUTOMATIC_DEAD_WORKER_RECOVERY " + "Retained evidence. ".repeat(50) });
        await until(() => heldSummaries.size > 0, "a worker owns a held summary before forced exit");
        proc.kill("SIGKILL"); await proc.exited;
        holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
@@ -258,7 +273,7 @@ try {
        await until(async () => { const status = await settingsCall("status"); return !status.jobs.pending && !status.jobs.running; }, "dead-worker recovery finishes pending jobs");
        const beforePause = publications().filter(p => p.sessionId === a.id).length;
        holdSummaries = true;
-       await api("POST", `/api/session/${a.id}/prompt`, { text: "BACKGROUND_PAUSE_RECOVERY" });
+        await api("POST", `/api/session/${a.id}/prompt`, { text: "BACKGROUND_PAUSE_RECOVERY " + "Retained evidence. ".repeat(50) });
        await until(async () => (await settingsCall("status")).lastError === "BACKGROUND_PAUSED", "three stalled attempts persist a background pause", 10000);
        const paused = await settingsCall("status"); assert(paused.jobs.pending > 0); assert.equal(paused.jobs.running, 0); assert.equal(paused.jobs.failed, 0);
        const pausedRequestCount = requests.length;
@@ -287,7 +302,7 @@ try {
        assert(contentRows.some(row => row.event === "compactor.response"), "Opt-in capture includes visible model answers");
        assert(contentText.includes("UNTRUSTED_JSON_DATA"), "Opt-in capture includes actual model prompts");
        for (const row of contentRows.filter(row => row.event === "compactor.response")) assert(capturedRequests.get(row.requestId)?.jobId === row.jobId, "Answers correlate with their request and job");
-         console.log(JSON.stringify({ root, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "native input during slow preparation", "cancelled claims and available settings", "native input with failed memory dependencies", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "pause survives restart and native events", "confirmed automatic recovery without data loss", "cold native compaction preserves originals", "cold compacted fork retains original checkpoint"], modelRequests: requests.length }, null, 2));
+          console.log(JSON.stringify({ root, batchedParents: true, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "native input during slow preparation", "cancelled claims and available settings", "native input with failed memory dependencies", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "pause survives restart and native events", "confirmed automatic recovery without data loss", "cold native compaction preserves originals", "cold compacted fork retains original checkpoint"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });
@@ -427,7 +442,7 @@ try {
     assert(installedEntrypoint.includes("/cache/opencode/"), "The host must use its isolated package cache");
     assert(installedEntrypoint.endsWith("/dist/adapters/opencode/plugin.js"), "The Git root export must resolve to the compiled plugin");
   }
-  console.log(JSON.stringify({ root, pluginPath: gitPackage ? undefined : pluginPath, gitPackage, installedEntrypoint, checks: ["actual context injection", "foreign transcript isolation", "tool protocol pairs", "search/source/zoom", "terminal publication", "service restart", "deduplication", "interrupted outcome", "failed outcome", "native compaction", "repeated checkpoint restart", "fork inheritance without republishing", "compacted fork inheritance", "independent fork retention", "private child execution", "native permission revocation", "active permission revocation", "native agent memory rule", "partial rewind", "stable-project worktree move", "fork original worktree provenance", "oversized active turn stop", "deletion including checkpoints"], priorCount, modelRequests: requests.length }, null, 2));
+  console.log(JSON.stringify({ root, batchedParents: true, pluginPath: gitPackage ? undefined : pluginPath, gitPackage, installedEntrypoint, checks: ["actual context injection", "foreign transcript isolation", "tool protocol pairs", "search/source/zoom", "terminal publication", "service restart", "deduplication", "interrupted outcome", "failed outcome", "native compaction", "repeated checkpoint restart", "fork inheritance without republishing", "compacted fork inheritance", "independent fork retention", "private child execution", "native permission revocation", "active permission revocation", "native agent memory rule", "partial rewind", "stable-project worktree move", "fork original worktree provenance", "oversized active turn stop", "deletion including checkpoints"], priorCount, modelRequests: requests.length }, null, 2));
   }
 } catch (error) {
   console.error(`Integration artifacts: ${root}`); throw error;

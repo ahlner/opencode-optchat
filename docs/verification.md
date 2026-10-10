@@ -601,3 +601,74 @@ The native terminal test passed six checks with no model calls in `optchat-tui-r
 These tests used private OpenCode services and loopback models. They made no billable provider calls.
 No existing user session, configuration, service, credential, or memory database changed.
 The owner's next trace must confirm the correction in the affected session.
+
+## Compactor quality and bounded parent batches
+
+Authorized content inspection showed small parent requests, routine audit overhead, and an accepted answer containing drafting notes.
+Some call-only summaries also described a result as absent, although results were separate retained records.
+The correction changes summarization inputs and checks. It does not change retained originals or their hashes.
+
+Audit projections omit routine model, token, cost, and timestamp fields.
+They retain errors, retries, changed files, and snapshot changes.
+Tool-call projections identify the separately retained result instead of implying that no result exists.
+Existing report leaves receive the same projection when they become direct parent inputs.
+
+Ready parents can share one request only within the same completed turn.
+The configured model's output limit bounds each batch, with an adapter maximum of eight parents.
+Every response must contain each supplied item ID exactly once and satisfy each item's 512-byte limit.
+Selected checks reject drafting notes, absent-category boilerplate, and unsupported call-only result-absence statements.
+These checks do not establish complete semantic correctness.
+
+Each batch member retains its own claim fence.
+Cancellation releases matching claims, and replaced or revoked claims cannot commit late answers.
+Every resulting node records the complete evidence range seen by all batch inputs, including earlier batch evidence.
+Search, retrieval, and partial retirement check that wider range before exposing or retaining the summary.
+
+Startup repair invalidates recognized bad generated nodes and their derivatives.
+It revokes affected snapshots and rebuilds summaries without modifying originals.
+Unaffected publications retain their publication order. An existing background pause still requires confirmed retry.
+
+The deterministic 16-record batching fixture reduced model requests from 32 to 21.
+The separate short-record lossless fixture still reduced requests from 32 to 2.
+These are controlled fixtures, not universal cost reductions.
+Tests cover invalid batch IDs, byte limits, cancellation, retention revocation, inherited evidence ranges, and cached-summary repair.
+
+The final `bun run check` passed TypeScript checks and 101 tests with 11,974 assertions.
+The packed archive passed public exports, a TypeScript consumer, documentation checks, and the unchanged paper hash.
+Its native runs passed 23 lifecycle groups and 25 settings and recovery groups.
+Both runs observed actual parent batches. They used 115 and 74 loopback model requests respectively.
+
+Private integration diagnostics remain in:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-m8gdp9
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-AQlGVD
+```
+
+A private native test initially found no batch request because model discovery during setup depended on the same Location initialization.
+The adapter now selects the batch bound during ordinary background model discovery, not plugin setup.
+The corrected packed-plugin tests observed actual batch requests and retained all four complete tool results.
+
+The native terminal test passed six checks without model calls in `optchat-tui-17rY6D`.
+The dependency audit passed for 428 installed package instances, with no bundled third-party source.
+
+### Authorized real-model trial
+
+The trial used new sessions in a separate temporary Location with `edenai/databricks/databricks-gpt-5-4-mini`.
+An existing native conversation accepted another input while auxiliary preparation responses remained blocked.
+Native dispatch completed in 387 milliseconds, without memory tools and with the explicit unavailable notice.
+
+After preparation completed, another session searched and read the exact original tool result.
+The unchanged verifier checked the unknown number, error identifier, failed outcome, test counts, proposal state, and citation.
+It also checked foreign transcript isolation. The trial passed with six observed summary calls.
+
+Private reports remain in:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-real-host-yssAti
+```
+
+This is one real-model trial, not a repeated benchmark or a test of the owner's affected session.
+The final review also added a regression for evidence inherited from an earlier wider batch.
+That regression supplements the real trial. It does not establish general model fidelity.
+The owner's plugin remains disabled. No existing user configuration, session, service, credential, or memory database changed.

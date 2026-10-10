@@ -7,6 +7,7 @@ interface Scope {
     policy: number;
     highWater: number;
 }
+export declare function evidenceInput(record: SourceRecord): string;
 export interface EngineOptions {
     high: number;
     low: number;
@@ -14,6 +15,8 @@ export interface EngineOptions {
     leaseMs: number;
     broadcastSubagents: boolean;
     maxRunningJobs: number;
+    parentBatchSize: number;
+    compactEvidence: boolean;
     jobEvent?: (event: string, details: {
         jobId: string;
         kind: string;
@@ -24,6 +27,7 @@ export interface EngineOptions {
         tree?: string;
         start?: number;
         count?: number;
+        batchSize?: number;
     }) => void;
 }
 export declare class Engine {
@@ -62,9 +66,12 @@ export declare class Engine {
     private schedulePublications;
     private writeNode;
     private summarizeFull;
+    private workParentBatch;
+    private parentInput;
     workOne(signal?: AbortSignal): Promise<boolean>;
     drain(max?: number, signal?: AbortSignal): Promise<void>;
     retryFailed(): void;
+    repairInvalidSummaries(scopeId: string): number;
     markInherited(sessionId: string, id: string): void;
     projection(view: View, budget: number): Node[];
     ownView(snapshot: Snapshot): View;

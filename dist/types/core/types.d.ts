@@ -46,6 +46,8 @@ export interface Node {
     promptVersion: string;
     bytes: number;
     fallback: boolean;
+    evidenceStart?: number;
+    evidenceEnd?: number;
 }
 export interface Publication {
     id: string;

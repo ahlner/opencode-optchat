@@ -48,6 +48,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     const models = await diagnostics.span("compactor.model.list", () => abortable(() => ctx.model.list({}), signal));
     const model = models.data.find(m => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
     insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
+    // Discover limits during actual background work, never while the Location is starting.
+    engine.options.parentBatchSize = Math.max(1, Math.min(8, Math.floor(model.limit.output / 3200)));
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
     return diagnostics.span("compactor.request", () => compactorRequest(async signal => diagnostics.span("compactor.generate", async () => {
       const requestId = crypto.randomUUID(), jobId = activeJob, parentId = activeOperation;
@@ -62,11 +64,13 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       return result.text;
     }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
   }, key(config.compactorModel), 12000, 3, true);
-  const engine = new Engine(store, compactor, { maxRunningJobs: 1, jobEvent: (event, details) => {
-    if (event === "job.claim") activeJob = details.jobId;
+  const engine = new Engine(store, compactor, { maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
+    if (event === "job.claim" || event === "job.batch") activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event)) activeJob = undefined;
   } }), retrieval = new Retrieval(engine);
+  const repairedNodes = engine.repairInvalidSummaries(config.scopeId);
+  if (repairedNodes) diagnostics.emit("summary.repaired", { count: repairedNodes });
   let tail: Promise<unknown> = Promise.resolve(), stopped = false, operationSignal: AbortSignal | undefined;
   let queued = 0, activeOperation: number | undefined, activePhase: string | undefined;
   let activeController: AbortController | undefined, primaryPriority = 0;

@@ -20,13 +20,14 @@ export class Retrieval {
     if (type !== "session") return false;
     const s = this.engine.store.get<{ scopeId: string; generation: number; disabled?: string }>("sessions", sessionId);
     if (!s || s.disabled || s.scopeId !== snapshot.scopeId || s.generation !== generation) return false;
-    if (sessionId === snapshot.sessionId && generation === snapshot.generation && node.start + node.count <= snapshot.ownBoundary) return true;
+    const start = node.evidenceStart ?? node.start, end = node.evidenceEnd ?? node.start + node.count;
+    if (sessionId === snapshot.sessionId && generation === snapshot.generation && end <= snapshot.ownBoundary) return true;
     // Foreign session ranges can span several published turns, but not an unpublished gap.
     return !this.engine.store.db.query(`SELECT 1 FROM sources s WHERE s.session=? AND s.generation=? AND s.seq>=? AND s.seq<?
       AND NOT EXISTS (SELECT 1 FROM entities p WHERE p.bucket='publications'
         AND json_extract(p.value,'$.scopeId')=? AND json_extract(p.value,'$.publicationSeq')<=?
         AND json_extract(p.value,'$.sessionId')=s.session AND json_extract(p.value,'$.generation')=s.generation
-        AND s.seq>=json_extract(p.value,'$.start') AND s.seq<json_extract(p.value,'$.end')) LIMIT 1`).get(sessionId, generation, node.start, node.start + node.count, snapshot.scopeId, snapshot.highWater);
+         AND s.seq>=json_extract(p.value,'$.start') AND s.seq<json_extract(p.value,'$.end')) LIMIT 1`).get(sessionId, generation, start, end, snapshot.scopeId, snapshot.highWater);
   }
   private sourceAllowed(snapshot: Snapshot, id: string) {
     this.engine.validateSnapshot(snapshot); const r = this.engine.source(id);
@@ -84,7 +85,7 @@ export class Retrieval {
           AND json_extract(ss.value,'$.scopeId')=$scope AND json_extract(ss.value,'$.generation')=json_extract(n.tree,'$[2]')
           AND json_extract(ss.value,'$.disabled') IS NULL)
           AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.session=json_extract(n.tree,'$[1]')
-            AND s.generation=json_extract(n.tree,'$[2]') AND s.seq>=n.start AND s.seq<n.start+n.count AND NOT (${visible}))))
+            AND s.generation=json_extract(n.tree,'$[2]') AND s.seq>=coalesce(json_extract(n.value,'$.evidenceStart'),n.start) AND s.seq<coalesce(json_extract(n.value,'$.evidenceEnd'),n.start+n.count) AND NOT (${visible}))))
       ) ORDER BY category,ordinal LIMIT $limit OFFSET $offset`).all({ query: literal, scope: snapshot.scopeId, session: snapshot.sessionId, generation: snapshot.generation, boundary: snapshot.ownBoundary, water: snapshot.highWater, shared: snapshot.view.tree, prefix: snapshot.view.prefix, limit: limit + 1, offset }) as { id: string; type: string }[];
     const hits = rows.slice(0, limit).map(row => {
       if (row.type === "source") { const r = this.sourceAllowed(snapshot, row.id); return { ...row, kind: r.kind, sessionId: r.sessionId, text: Array.from(r.payload).slice(0, 200).join("") }; }

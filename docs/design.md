@@ -2,6 +2,34 @@
 
 See [project terms](writing-guide.md#project-terms) for technical definitions.
 
+## Bounded parent batches and repair
+
+The adapter projects routine audit records before summarization. Original payloads and payload hashes remain unchanged.
+Errors, retry data, changed files, and substantive tool payloads remain in the projection.
+Tool-call projections identify the separate result record without claiming that a result is absent.
+
+Only ready parents inside one completed session turn can share a request.
+Shared-tree parents and parents spanning different turns remain separate.
+Model output limits determine the batch size, up to eight jobs.
+Every batch output has a checked item ID, a finished-text check, and its own 512-byte limit.
+Malformed responses retry at most three times and never create partial batch nodes.
+
+Peer claims share one serialized provider operation, but each claim keeps its own fence and lease renewal.
+Cancellation releases all matching claims. Retention or another worker can invalidate each result independently.
+No stale result can replace a new owner or revive deleted data.
+
+Each batched node records `evidenceStart` and `evidenceEnd` in addition to its dyadic coordinates.
+Ancestors inherit these wider evidence bounds.
+Retrieval and search authorize the complete evidence range before returning excerpts.
+Prefix retirement excludes nodes whose evidence extends into the removed suffix.
+This prevents a prefix from retaining a summary that saw later batch items.
+
+Startup repairs old generated summaries that match the selected rejection rules.
+The transaction removes their dependent nodes and publications, fences affected jobs, and revokes scope snapshots.
+It retains originals, unaffected publications, and their publication order.
+Reconstruction creates new immutable nodes and new affected publications through the ordinary worker path.
+Neither these rules nor the batch contract establish complete semantic fidelity.
+
 ## Identity and storage
 
 `Session` contains a scope, stable project identifier, and generation.

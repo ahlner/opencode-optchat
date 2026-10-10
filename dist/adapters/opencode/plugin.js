@@ -361,6 +361,7 @@ class Engine {
   store;
   summarizer;
   options;
+  jobBudget;
   get summaryAcceptBytes() {
     return this.options.summaryAcceptBytes;
   }
@@ -370,12 +371,21 @@ class Engine {
     this.options = { ...defaults, ...options };
     validateSummaryAcceptBytes(this.summaryAcceptBytes);
     insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
+    this.jobBudget = this.options.maxRunningJobs;
+    this.store.contributeBudget(this.jobBudget);
     insist(Number.isSafeInteger(this.options.parentBatchSize) && this.options.parentBatchSize >= 1 && this.options.parentBatchSize <= 16, "CONFIG", "Parent batch size must be between 1 and 16");
     insist(Number.isSafeInteger(this.options.leafBatchSize) && this.options.leafBatchSize >= 1 && this.options.leafBatchSize <= 16, "CONFIG", "Leaf batch size must be between 1 and 16");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id) {
     return this.store.get("scopes", id) ?? { id, epoch: 0, policy: 0, highWater: 0 };
+  }
+  evidenceBound(batch = 1) {
+    const concurrency = this.store.concurrency();
+    if (concurrency === Number.MAX_SAFE_INTEGER)
+      return concurrency;
+    const largest = Math.max(1, this.options.parentBatchSize, this.options.leafBatchSize, batch);
+    return Math.min(Number.MAX_SAFE_INTEGER, concurrency * largest);
   }
   register(id, scopeId, projectId, parentId) {
     return this.store.transaction(() => {
@@ -615,7 +625,7 @@ class Engine {
         insist(summaryFits(result.text, parts[i], this.summaryAcceptBytes), "SUMMARY_SIZE", "Summary exceeds its tolerance or does not reduce its input");
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
-          insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
+          insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.evidenceBound()), "LEASE_LOST", "Another worker or retention change replaced this job");
           this.writeNode(n);
         });
         summaries.push(n.text);
@@ -664,7 +674,7 @@ class Engine {
       const committed = [];
       this.store.transaction(() => {
         for (const [index, job] of jobs.entries()) {
-          if (!this.store.recoverLease(job, this.options.leaseMs, Date.now(), Math.min(Number.MAX_SAFE_INTEGER, this.options.maxRunningJobs + jobs.length - 1))) {
+          if (!this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.evidenceBound(jobs.length))) {
             report(job, "job.unowned");
             continue;
           }
@@ -721,7 +731,7 @@ class Engine {
   }
   async workOne(signal) {
     signal?.throwIfAborted();
-    const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
+    const job = this.store.claim(Date.now(), this.options.leaseMs, this.jobBudget);
     if (!job)
       return false;
     const claimedPeers = [];
@@ -805,7 +815,7 @@ class Engine {
       const result = await this.summarizeFull(text, job, signal);
       signal?.throwIfAborted();
       this.store.transaction(() => {
-        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
+        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.evidenceBound()), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -848,11 +858,51 @@ class Engine {
     }
     return true;
   }
-  async drain(max = 1e5, signal) {
-    for (let i = 0;i < max; i++)
-      if (!await this.workOne(signal))
-        return;
-    throw new Error("Job drain exceeded its bound");
+  async drain(max = 1e5, signal, runners = 1) {
+    insist(Number.isSafeInteger(runners) && runners > 0, "CONFIG", "Drain runners must be a positive integer");
+    if (runners === 1) {
+      for (let i = 0;i < max; i++)
+        if (!await this.workOne(signal))
+          return;
+      throw new Error("Job drain exceeded its bound");
+    }
+    const previous = this.options.maxRunningJobs, previousBudget = this.jobBudget;
+    this.options.maxRunningJobs = Math.max(previous, runners);
+    this.jobBudget = Math.min(Number.MAX_SAFE_INTEGER, Math.max(previousBudget, runners * Math.max(1, this.options.parentBatchSize, this.options.leafBatchSize)));
+    this.store.contributeBudget(this.jobBudget);
+    let consumed = 0, active = 0, stop = false;
+    const hasPending = () => this.store.db.query("SELECT count(*) n FROM jobs WHERE status='pending'").get().n > 0;
+    const run = async () => {
+      for (let i = 0;i < max; i++) {
+        signal?.throwIfAborted();
+        if (stop)
+          return;
+        active++;
+        let claimed;
+        try {
+          claimed = await this.workOne(signal);
+        } finally {
+          active--;
+        }
+        if (!claimed) {
+          if (!hasPending() && active === 0) {
+            stop = true;
+            return;
+          }
+          await Bun.sleep(1);
+          continue;
+        }
+        consumed++;
+      }
+      throw new Error("Job drain exceeded its bound");
+    };
+    try {
+      await Promise.all(Array.from({ length: runners }, run));
+    } finally {
+      this.options.maxRunningJobs = previous;
+      this.jobBudget = previousBudget;
+      this.store.contributeBudget(previousBudget);
+    }
   }
   retryFailed() {
     this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run();
@@ -1151,10 +1201,16 @@ class Engine {
 // src/storage/store.ts
 import { Database } from "bun:sqlite";
 import { chmodSync } from "fs";
+var budgetRegistry = globalThis.__optchatBudgets ??= { budgets: new Map, nextId: 1 };
+
 class Store {
   db;
   owner = crypto.randomUUID();
+  storeKey;
+  budgetId = budgetRegistry.nextId++;
+  engineBudget = Number.MAX_SAFE_INTEGER;
   constructor(path = ":memory:") {
+    this.storeKey = path === ":memory:" ? `memory:${this.owner}` : path;
     this.db = new Database(path, { create: true, strict: true });
     if (path !== ":memory:")
       chmodSync(path, 384);
@@ -1236,6 +1292,31 @@ class Store {
   owns(job) {
     const row = this.db.query("SELECT fence,status,leaseUntil FROM jobs WHERE id=?").get(job.id);
     return row?.fence === job.fence && row.status === "running" && row.leaseUntil > Date.now();
+  }
+  contributeBudget(budget) {
+    if (!Number.isSafeInteger(budget) || budget <= 0 || budget === Number.MAX_SAFE_INTEGER)
+      return;
+    this.engineBudget = budget;
+    let map = budgetRegistry.budgets.get(this.storeKey);
+    if (!map) {
+      map = new Map;
+      budgetRegistry.budgets.set(this.storeKey, map);
+    }
+    map.set(this.budgetId, budget);
+  }
+  concurrency() {
+    if (this.engineBudget === Number.MAX_SAFE_INTEGER)
+      return Number.MAX_SAFE_INTEGER;
+    const map = budgetRegistry.budgets.get(this.storeKey);
+    if (!map || map.size === 0)
+      return this.engineBudget;
+    let total = 0;
+    for (const value of map.values())
+      total = Math.min(Number.MAX_SAFE_INTEGER, total + value);
+    return Math.max(1, total);
+  }
+  releaseBudget() {
+    budgetRegistry.budgets.get(this.storeKey)?.delete(this.budgetId);
   }
   claimParentPeers(anchor, limit, leaseMs, start, end) {
     return this.claimEvidencePeers(anchor, limit, leaseMs, start, end, "parent");
@@ -2157,7 +2238,9 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
   const scopeId = automaticScope(ctx.location?.project?.id ?? "global", ctx.location?.project?.canonical);
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
+  const compactorConcurrency = config.compactorConcurrency ?? 2;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
+  insist(Number.isSafeInteger(compactorConcurrency) && compactorConcurrency >= 1 && compactorConcurrency <= 8, "CONFIG", "Compactor concurrency must be between 1 and 8");
   insist(Number.isSafeInteger(memoryBytes) && memoryBytes >= 0 && Number.isSafeInteger(safetyTokens) && safetyTokens >= 256, "CONFIG", "Invalid memory/safety budget");
   insist(config.captureContent === undefined || typeof config.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
   await mkdir(dirname(config.database), { recursive: true, mode: 448 });
@@ -2246,7 +2329,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       store.remove("compactorRetry", retryId);
     }
   }, key(config.compactorModel), 12000, 5, true, summaryAcceptBytes);
-  const engine = new Engine(store, compactor, { summaryAcceptBytes, maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
+  const engine = new Engine(store, compactor, { summaryAcceptBytes, maxRunningJobs: compactorConcurrency, compactEvidence: true, jobEvent: (event, details) => {
     if (event === "job.claim" || event === "job.batch")
       activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });
@@ -2316,7 +2399,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         if (!session.disabled && session.scopeId === scopeId && engine.preparationStatus(session.id).failed) {
           throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
         }
-      await diagnostics.span("compactor.drain", () => engine.drain(1e5, operationSignal), { parentId: activeOperation });
+      await diagnostics.span("compactor.drain", () => engine.drain(1e5, operationSignal, compactorConcurrency), { parentId: activeOperation });
     } catch (error) {
       if (operationSignal?.aborted)
         throw operationSignal.reason;
@@ -2871,6 +2954,7 @@ ${JSON.stringify(summaries)}`, metadata: { optchatCheckpoint: checkpoint.id } };
     await events;
     await tail;
     diagnostics.close();
+    store.releaseBudget();
     store.close();
   };
 } });
@@ -2879,4 +2963,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=D8E912B47306129164756E2164756E21
+//# debugId=8D1D89848BDAEE0264756E2164756E21

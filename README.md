@@ -142,6 +142,12 @@ The adapter discovers that limit during background work, not during startup.
 It never batches different turns or shared publication ranges together.
 Each response must contain every expected item ID exactly once and respect each item's acceptance limits.
 
+The adapter runs up to two concurrent workers by default.
+Each worker still batches its own peers.
+Concurrent workers process independent turns and sessions in parallel.
+This increases provider concurrency, so a small default respects rate limits and quotas.
+The `compactorConcurrency` option sets the worker count between one and eight.
+
 Leaf batches limit their combined projected input to 10,000 UTF-8 bytes, or a smaller configured chunk limit.
 Oversized originals still use the existing complete-input chunking path. The adapter never cuts an original to fit a batch.
 

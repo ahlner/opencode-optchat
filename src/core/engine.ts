@@ -30,17 +30,29 @@ export interface EngineOptions { high: number; low: number; chunkBytes: number; 
 const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, leafBatchSize: 1, compactEvidence: false, summaryAcceptBytes: defaultSummaryAcceptBytes };
 export class Engine {
   readonly options: EngineOptions;
+  // The number of jobs a single claim may hold. Drain raises this for concurrent runners.
+  private jobBudget: number;
   get summaryAcceptBytes() { return this.options.summaryAcceptBytes; }
   constructor(readonly store: Store, readonly summarizer: Summarizer = new FakeSummarizer(), options: Partial<EngineOptions> = {}) {
     this.options = { ...defaults, ...options };
     validateSummaryAcceptBytes(this.summaryAcceptBytes);
     insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
+    this.jobBudget = this.options.maxRunningJobs;
+    this.store.contributeBudget(this.jobBudget);
     insist(Number.isSafeInteger(this.options.parentBatchSize) && this.options.parentBatchSize >= 1 && this.options.parentBatchSize <= 16, "CONFIG", "Parent batch size must be between 1 and 16");
     insist(Number.isSafeInteger(this.options.leafBatchSize) && this.options.leafBatchSize >= 1 && this.options.leafBatchSize <= 16, "CONFIG", "Leaf batch size must be between 1 and 16");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id: string): Scope {
     return this.store.get<Scope>("scopes", id) ?? { id, epoch: 0, policy: 0, highWater: 0 };
+  }
+  // Commit-time ceiling for lease renewal. It covers one full batch per runner across every engine
+  // that shares this database. An uncapped engine keeps the historical unlimited bound.
+  private evidenceBound(batch = 1): number {
+    const concurrency = this.store.concurrency();
+    if (concurrency === Number.MAX_SAFE_INTEGER) return concurrency;
+    const largest = Math.max(1, this.options.parentBatchSize, this.options.leafBatchSize, batch);
+    return Math.min(Number.MAX_SAFE_INTEGER, concurrency * largest);
   }
   register(id: string, scopeId: string, projectId: string, parentId?: string): Session {
     return this.store.transaction(() => {
@@ -234,7 +246,7 @@ export class Engine {
         const result = await abortable(() => this.summarizer.summarize(parts[i]!, signal), signal); fallback ||= result.fallback;
         insist(summaryFits(result.text, parts[i]!, this.summaryAcceptBytes), "SUMMARY_SIZE", "Summary exceeds its tolerance or does not reduce its input");
         const n: Node = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
-        this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
+        this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.evidenceBound()), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
         summaries.push(n.text); ids.push(n.id);
       }
       text = summaries.join("\n"); inputs = ids; depth++;
@@ -261,7 +273,8 @@ export class Engine {
       this.store.transaction(() => {
         for (const [index, job] of jobs.entries()) {
           // Peer claims belong to one serialized provider request. Never accept a replaced fence.
-          if (!this.store.recoverLease(job, this.options.leaseMs, Date.now(), Math.min(Number.MAX_SAFE_INTEGER, this.options.maxRunningJobs + jobs.length - 1))) { report(job, "job.unowned"); continue; }
+          // The bound is the database-wide runner budget times the largest batch.
+          if (!this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.evidenceBound(jobs.length))) { report(job, "job.unowned"); continue; }
           insist(job.input.type !== "publication", "JOB_SHAPE", "Expected session evidence");
           const children = job.input.type === "parent" ? job.input.children : [];
           if (job.input.type === "leaf") this.source(job.input.source); else children.forEach(id => this.node(id));
@@ -303,7 +316,7 @@ export class Engine {
   }
   async workOne(signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted();
-    const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
+    const job = this.store.claim(Date.now(), this.options.leaseMs, this.jobBudget);
     if (!job) return false;
     const claimedPeers: Job[] = [];
     try {
@@ -360,7 +373,7 @@ export class Engine {
       const result = await this.summarizeFull(text, job, signal);
       signal?.throwIfAborted();
       this.store.transaction(() => {
-        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
+        insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.evidenceBound()), "LEASE_LOST", "Another worker or retention change replaced this job");
         const n: Node = { id: hash(key(job.id, result)), tree, start, count, children, source, ...result, inputs: [hash(text), ...result.inputs], bytes: bytes(result.text) };
         if (input.type === "publication") {
           const t = this.store.get<Turn>("turns", input.turnKey), s = t && this.session(t.sessionId);
@@ -390,9 +403,42 @@ export class Engine {
     finally { clearInterval(renewal); }
     return true;
   }
-  async drain(max = 100000, signal?: AbortSignal) {
-    for (let i = 0; i < max; i++) if (!await this.workOne(signal)) return;
-    throw new Error("Job drain exceeded its bound");
+  async drain(max = 100000, signal?: AbortSignal, runners = 1) {
+    insist(Number.isSafeInteger(runners) && runners > 0, "CONFIG", "Drain runners must be a positive integer");
+    // Serial execution keeps the peer batching of a single runner intact.
+    if (runners === 1) {
+      for (let i = 0; i < max; i++) if (!await this.workOne(signal)) return;
+      throw new Error("Job drain exceeded its bound");
+    }
+    // Concurrent runners process independent trees in parallel. Each runner still batches its own peers.
+    // The fence and lease checks use maxRunningJobs, so keep it aligned with the active runner count.
+    const previous = this.options.maxRunningJobs, previousBudget = this.jobBudget;
+    this.options.maxRunningJobs = Math.max(previous, runners);
+    // Allow each runner to hold its own full batch without starving the other runners.
+    this.jobBudget = Math.min(Number.MAX_SAFE_INTEGER, Math.max(previousBudget, runners * Math.max(1, this.options.parentBatchSize, this.options.leafBatchSize)));
+    this.store.contributeBudget(this.jobBudget);
+    let consumed = 0, active = 0, stop = false;
+    const hasPending = () => (this.store.db.query("SELECT count(*) n FROM jobs WHERE status='pending'").get() as { n: number }).n > 0;
+    const run = async () => {
+      for (let i = 0; i < max; i++) {
+        signal?.throwIfAborted();
+        if (stop) return;
+        active++;
+        let claimed: boolean;
+        try { claimed = await this.workOne(signal); }
+        finally { active--; }
+        if (!claimed) {
+          // A runner may find no work while a peer still runs or produces jobs. Only stop when nothing is pending and no peer is active.
+          if (!hasPending() && active === 0) { stop = true; return; }
+          await Bun.sleep(1);
+          continue;
+        }
+        consumed++;
+      }
+      throw new Error("Job drain exceeded its bound");
+    };
+    try { await Promise.all(Array.from({ length: runners }, run)); }
+    finally { this.options.maxRunningJobs = previous; this.jobBudget = previousBudget; this.store.contributeBudget(previousBudget); }
   }
   retryFailed() { this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run(); }
   recoverRejectedBatches(scopeId: string): number {

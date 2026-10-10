@@ -3,6 +3,9 @@ import { type Job, type JobInput } from "../core/types.ts";
 export declare class Store {
     readonly db: Database;
     private readonly owner;
+    private readonly storeKey;
+    private readonly budgetId;
+    private engineBudget;
     constructor(path?: string);
     transaction<T>(fn: () => T): T;
     get<T>(bucket: string, id: string): T | undefined;
@@ -12,6 +15,9 @@ export declare class Store {
     enqueue(input: JobInput): string;
     claim(now?: number, leaseMs?: number, maxRunning?: number): Job | undefined;
     owns(job: Job): boolean;
+    contributeBudget(budget: number): void;
+    concurrency(): number;
+    releaseBudget(): void;
     claimParentPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[];
     claimLeafPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[];
     private claimEvidencePeers;

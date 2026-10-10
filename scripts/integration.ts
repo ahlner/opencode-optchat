@@ -10,7 +10,9 @@ for (const dir of ["config", "data", "cache", "state", "project", "project/plugi
 const requests: any[] = [];
 let holdSummaries = false;
 let unavailableResponses = 0, unavailableAttempts = 0;
+let holdConcurrent = false, inFlightSummaries = 0, peakConcurrentSummaries = 0;
 const heldSummaries = new Set<() => void>();
+const concurrentWaiters = new Set<() => void>();
 const plain = (text: string) => ({ content: text });
 const call = (id: string, name: string, input: unknown) => ({ tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(input) } }] });
 const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
@@ -21,6 +23,12 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
     return Response.json({ error: { message: "Fixture model is temporarily unavailable", type: "server_error", code: "provider_unavailable" } }, { status: 503 });
   }
   if (holdSummaries && all.includes("UNTRUSTED_JSON_DATA")) await new Promise<void>(resolve => heldSummaries.add(resolve));
+  if (all.includes("UNTRUSTED_JSON_DATA")) {
+    peakConcurrentSummaries = Math.max(peakConcurrentSummaries, ++inFlightSummaries);
+    try {
+      if (holdConcurrent) await new Promise<void>(resolve => concurrentWaiters.add(resolve));
+    } finally { inFlightSummaries--; }
+  }
   const tools = messages.filter(m => m.role === "tool");
   if (body.tools && messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("FAIL_CURRENT"))) return Response.json({ error: { message: "Fixture rejects this attempt", type: "invalid_request_error", code: "fixture_failure" } }, { status: 400 });
   if (body.tools && messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("INTERRUPT_CURRENT"))) {
@@ -41,7 +49,11 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
        delta = plain(JSON.stringify(items.map((item: any) => ({ id: item.id, text: summary(item.data) }))));
      } else delta = plain(summary(all));
    }
-   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("BATCH_PARENT_SEED"))) delta = tools.length ? plain("BATCH_PARENT_COMPLETED") : { tool_calls: Array.from({ length: 4 }, (_, index) => ({ index, id: `batch_call_${index}`, type: "function", function: { name: "fixture_echo", arguments: JSON.stringify({ text: `BATCH_ITEM_${index} ` + "x".repeat(700) }) } })) };
+   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("PARALLEL_SEED"))) {
+    if (tools.length < 4) delta = { tool_calls: [{ index: 0, id: `parallel_call_${tools.length}`, type: "function", function: { name: "fixture_echo", arguments: JSON.stringify({ text: `PARALLEL_ITEM_${tools.length} ` + "x".repeat(700) }) } }] };
+    else delta = plain("PARALLEL_COMPLETED");
+  }
+  else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("BATCH_PARENT_SEED"))) delta = tools.length ? plain("BATCH_PARENT_COMPLETED") : { tool_calls: Array.from({ length: 4 }, (_, index) => ({ index, id: `batch_call_${index}`, type: "function", function: { name: "fixture_echo", arguments: JSON.stringify({ text: `BATCH_ITEM_${index} ` + "x".repeat(700) }) } })) };
    else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("A_DECISION"))) delta = tools.length ? plain("A verified tool result: PAIR_OK; use Bun decision recorded.") : call("call_fixture", "fixture_echo", { text: "PAIR_OK" });
   else if (messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("B_CURRENT"))) {
     if (!tools.length) delta = call("call_search", "optchat_search", { query: "A_DECISION" });
@@ -181,6 +193,18 @@ try {
   const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
   assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);
   for (let i = 0; i < 4; i++) assert(batchSources.some(r => r.kind === "tool_result" && r.payload.includes(`BATCH_ITEM_${i}`) && r.payload.includes("x".repeat(700))), "Every full result remains retained");
+  // Parallel compaction: two workers must summarize independent leaves at the same time.
+  const parallelSession = await create(), beforeParallel = requests.length;
+  peakConcurrentSummaries = 0; holdConcurrent = true;
+  await api("POST", `/api/session/${parallelSession.id}/prompt`, { text: "PARALLEL_SEED make four tool calls: fixture_echo PARALLEL_ITEM_0 through PARALLEL_ITEM_3." });
+  await until(() => concurrentWaiters.size >= 2, "two model summaries run at the same time", 20000);
+  assert(peakConcurrentSummaries >= 2, "Parallel workers compact independent leaves concurrently");
+  for (const release of concurrentWaiters) release(); concurrentWaiters.clear(); holdConcurrent = false;
+  await until(() => publications().some(p => p.sessionId === parallelSession.id), "parallel turn publication");
+  await until(() => (db!.query("SELECT count(*) n FROM jobs WHERE status IN ('running','pending')").get() as { n: number }).n === 0, "parallel drain completes");
+  const parallelJobs = (db!.query("SELECT status FROM jobs").all() as { status: string }[]);
+  assert.equal(parallelJobs.filter(j => j.status !== "done").length, 0, "Parallel compaction leaves no unfinished jobs");
+  assert(requests.length > beforeParallel, "Parallel preparation performed real model work");
   const scopeId = JSON.parse((db!.query("SELECT value FROM entities WHERE bucket='scopes'").get() as { value: string }).value).id as string;
   if (managedSettings) {
     await until(() => publications().some(p => p.sessionId === c.id), "C publication before settings change");

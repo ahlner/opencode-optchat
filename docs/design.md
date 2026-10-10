@@ -14,6 +14,14 @@ Model output limits determine the batch size, up to eight jobs.
 Every batch output has a checked item ID, a finished-text check, and its own configured size limit.
 Malformed responses permit at most five model attempts and never create partial batch nodes.
 
+The adapter runs several worker loops in parallel.
+Each worker keeps its own peer batching.
+The default worker count is two. The `compactorConcurrency` option accepts one to eight workers.
+
+A worker stops only when no job is pending and no peer worker is active.
+This rule prevents an early stop while another worker produces jobs.
+The job budget covers every concurrent worker and its batch. Fence recovery therefore accepts every valid claim.
+
 Leaf batches contain at most 10,000 projected UTF-8 bytes, or the smaller configured chunk limit.
 Every original retains its independent source reference and complete payload.
 Oversized projections keep the complete-input chunking path. Batch selection releases unused peer claims.

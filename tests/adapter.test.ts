@@ -110,6 +110,10 @@ test("cold history uses native messages immediately, remains native through cont
       fast = true;
       const finished = Date.now() + 3000;
       while (store.all("publications").length < 24 && Date.now() < finished) await Bun.sleep(10);
+      // Concurrent runners can still hold the compactor operation open right after the last publication.
+      // Wait until no preparation operation is active before a fresh session admits shared memory.
+      while ((rpc.status && (await rpc.status({})).jobs.running > 0) && Date.now() < finished) await Bun.sleep(10);
+      await Bun.sleep(50);
       expect(new Engine(store).sources("cold-session", 0)).toHaveLength(24);
       expect(store.all("publications")).toHaveLength(24);
       await hooks.context(request); expect(request.messages).toBe(messages);

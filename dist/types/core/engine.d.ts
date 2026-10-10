@@ -36,9 +36,11 @@ export declare class Engine {
     readonly store: Store;
     readonly summarizer: Summarizer;
     readonly options: EngineOptions;
+    private jobBudget;
     get summaryAcceptBytes(): number;
     constructor(store: Store, summarizer?: Summarizer, options?: Partial<EngineOptions>);
     scope(id: string): Scope;
+    private evidenceBound;
     register(id: string, scopeId: string, projectId: string, parentId?: string): Session;
     rescope(oldScopeId: string, newScopeId: string): void;
     session(id: string): Session;
@@ -74,7 +76,7 @@ export declare class Engine {
     private leafInput;
     private parentInput;
     workOne(signal?: AbortSignal): Promise<boolean>;
-    drain(max?: number, signal?: AbortSignal): Promise<void>;
+    drain(max?: number, signal?: AbortSignal, runners?: number): Promise<void>;
     retryFailed(): void;
     recoverRejectedBatches(scopeId: string): number;
     recoverProviderFailures(scopeId: string): number;

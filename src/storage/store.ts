@@ -3,10 +3,19 @@ import { chmodSync } from "node:fs";
 import { hash, insist, type Job, type JobInput } from "../core/types.ts";
 
 // JSON envelopes keep migrations small; indexed coordinates enforce critical uniqueness.
+// Locations can load separate copies of this module, so the shared budget registry lives on globalThis.
+const budgetRegistry = (globalThis as { __optchatBudgets?: { budgets: Map<string, Map<number, number>>; nextId: number } }).__optchatBudgets ??= { budgets: new Map(), nextId: 1 };
 export class Store {
   readonly db: Database;
   private readonly owner = crypto.randomUUID();
+  // Engines that share one database file add their runner budget here. The sum is the ceiling for
+  // lease renewal, so a session moved to another Location cannot restart a job that exceeds the
+  // concurrency of the whole database. Distinct in-memory stores stay independent.
+  private readonly storeKey: string;
+  private readonly budgetId = budgetRegistry.nextId++;
+  private engineBudget = Number.MAX_SAFE_INTEGER;
   constructor(path = ":memory:") {
+    this.storeKey = path === ":memory:" ? `memory:${this.owner}` : path;
     this.db = new Database(path, { create: true, strict: true });
     if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;");
@@ -78,6 +87,25 @@ export class Store {
     const row = this.db.query("SELECT fence,status,leaseUntil FROM jobs WHERE id=?").get(job.id) as Pick<Job, "fence" | "status" | "leaseUntil"> | null;
     return row?.fence === job.fence && row.status === "running" && row.leaseUntil > Date.now();
   }
+  // Declare how many jobs this engine may hold at once. Every engine on the same file contributes,
+  // so the shared ceiling covers parallel Locations without persisting transient runtime state.
+  contributeBudget(budget: number) {
+    if (!Number.isSafeInteger(budget) || budget <= 0 || budget === Number.MAX_SAFE_INTEGER) return;
+    this.engineBudget = budget;
+    let map = budgetRegistry.budgets.get(this.storeKey);
+    if (!map) { map = new Map(); budgetRegistry.budgets.set(this.storeKey, map); }
+    map.set(this.budgetId, budget);
+  }
+  concurrency(): number {
+    // An engine without an explicit cap keeps the historical uncapped renewal behavior.
+    if (this.engineBudget === Number.MAX_SAFE_INTEGER) return Number.MAX_SAFE_INTEGER;
+    const map = budgetRegistry.budgets.get(this.storeKey);
+    if (!map || map.size === 0) return this.engineBudget;
+    let total = 0;
+    for (const value of map.values()) total = Math.min(Number.MAX_SAFE_INTEGER, total + value);
+    return Math.max(1, total);
+  }
+  releaseBudget() { budgetRegistry.budgets.get(this.storeKey)?.delete(this.budgetId); }
   claimParentPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[] {
     return this.claimEvidencePeers(anchor, limit, leaseMs, start, end, "parent");
   }

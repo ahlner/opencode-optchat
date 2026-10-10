@@ -13,7 +13,7 @@ import { automaticScope, sameDirectory } from "./settings-scope.ts";
 import { createRecoveryLoop } from "./recovery-loop.ts";
 import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
-interface Config { database: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; summaryAcceptBytes?: number; memoryBytes: number; safetyTokens: number; waitMs: number }
+interface Config { database: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; summaryAcceptBytes?: number; memoryBytes: number; safetyTokens: number; waitMs: number; compactorConcurrency?: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
@@ -26,7 +26,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   // The trust scope comes from the host project. The TUI settings path injects it; direct setups derive it here.
   const scopeId = automaticScope(ctx.location?.project?.id ?? "global", ctx.location?.project?.canonical);
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
+  // Concurrent compactor runners process independent trees in parallel. Keep the default small to respect provider rate limits.
+  const compactorConcurrency = config.compactorConcurrency ?? 2;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
+  insist(Number.isSafeInteger(compactorConcurrency) && compactorConcurrency >= 1 && compactorConcurrency <= 8, "CONFIG", "Compactor concurrency must be between 1 and 8");
   insist(Number.isSafeInteger(memoryBytes) && memoryBytes >= 0 && Number.isSafeInteger(safetyTokens) && safetyTokens >= 256, "CONFIG", "Invalid memory/safety budget");
   insist(config.captureContent === undefined || typeof config.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
   await mkdir(dirname(config.database), { recursive: true, mode: 0o700 });
@@ -108,7 +111,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     }), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
     } finally { store.remove("compactorRetry", retryId); }
   }, key(config.compactorModel), 12000, 5, true, summaryAcceptBytes);
-  const engine = new Engine(store, compactor, { summaryAcceptBytes, maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
+  const engine = new Engine(store, compactor, { summaryAcceptBytes, maxRunningJobs: compactorConcurrency, compactEvidence: true, jobEvent: (event, details) => {
     if (event === "job.claim" || event === "job.batch") activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event)) activeJob = undefined;
@@ -160,7 +163,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       for (const session of store.all<Session>("sessions")) if (!session.disabled && session.scopeId === scopeId && engine.preparationStatus(session.id).failed) {
         throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
       }
-      await diagnostics.span("compactor.drain", () => engine.drain(100000, operationSignal), { parentId: activeOperation });
+      await diagnostics.span("compactor.drain", () => engine.drain(100000, operationSignal, compactorConcurrency), { parentId: activeOperation });
     } catch (error) {
       if (operationSignal?.aborted) throw operationSignal.reason;
       if (error instanceof MemoryError && ["COMPACTION_FAILED", "BACKGROUND_PAUSED"].includes(error.code)) throw error;
@@ -555,6 +558,6 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     }
    })().catch(error => { if (!stopped) { for (const s of store.all<Session>("sessions")) reconciliationFailure(s.id, `Event stream failed: ${String(error)}`, error); } });
   diagnostics.emit("runtime.ready");
-  return async () => { diagnostics.emit("shutdown.request"); stopped = true; controller.abort(); await recovery.dispose(); await events; await tail; diagnostics.close(); store.close(); };
+  return async () => { diagnostics.emit("shutdown.request"); stopped = true; controller.abort(); await recovery.dispose(); await events; await tail; diagnostics.close(); store.releaseBudget(); store.close(); };
 } });
 export default Plugin.define({ id: "optchat.memory", setup: ctx => setupSettings(ctx, memory.setup) });

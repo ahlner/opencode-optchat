@@ -395,6 +395,27 @@ describe("crash, concurrency, retention and compactor failures", () => {
     const pending = e.workOne(); e.retire("a", "delete"); resolve({ text: "secret", model: "late", promptVersion: "1", fallback: false });
     expect(await pending).toBe(true); expect(pubs(e)).toHaveLength(0);
   });
+  test("concurrent drain runners summarize independent sessions in parallel", async () => {
+    let active = 0, peak = 0;
+    const e = make({ summarize: async text => { peak = Math.max(peak, ++active); await Bun.sleep(60); active--; return { text: text.slice(0, 40), model: "slow", promptVersion: "1", fallback: false }; } }, { maxRunningJobs: 3 });
+    for (const id of ["a", "b", "c"]) { register(e, id); e.admit(id, "t"); e.append(input(id, "t", "e", `EVIDENCE_${id}`)); e.finish(id, "t", "completed"); }
+    await e.drain(100000, undefined, 3);
+    expect(pubs(e)).toHaveLength(3);
+    // At least two independent summaries must overlap, otherwise the runners ran serially.
+    expect(peak).toBeGreaterThan(1);
+    expect(e.store.db.query("SELECT count(*) n FROM jobs WHERE status<>'done'").get()).toEqual({ n: 0 });
+  });
+  test("concurrent drain does not stop while a peer still produces jobs", async () => {
+    let calls = 0;
+    const summary = { text: "done", model: "fixture", promptVersion: "1", fallback: false };
+    const e = make({ summarize: async () => summary, summarizeBatch: async (inputs: string[], _s?: AbortSignal, ids?: string[]) => { if (++calls === 1) throw new Error("temporary"); return ids!.map(() => summary); } } as any, { maxRunningJobs: 2, parentBatchSize: 1, leafBatchSize: 1 });
+    register(e, "a"); e.admit("a", "t");
+    // Long payload forces chunked summarization, which enqueues a second job after the first completes.
+    e.append(input("a", "t", "e", "RETAINED_EVIDENCE ".repeat(40))); e.finish("a", "t", "completed");
+    await e.drain(100000, undefined, 2);
+    expect(pubs(e)).toHaveLength(1);
+    expect(e.store.db.query("SELECT count(*) n FROM jobs WHERE status<>'done'").get()).toEqual({ n: 0 });
+  });
 });
 describe("bounded real summarizer and host transcript mapping", () => {
   test("UTF-8 retry uses measured length, never byte clipping", async () => {

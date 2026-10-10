@@ -7,7 +7,7 @@ Use Bun for installation, scripts, tests, SQLite, and runtime execution.
 Do not use npm, pnpm, yarn, or the Node executable.
 Imports from `node:` use Bun's compatible built-in modules.
 
-The current adapter supports OpenCode **2.0.26** only.
+The current adapter supports OpenCode **2.0.x**.
 Do not describe this implementation as production-ready or fully compliant with the paper.
 Read `README.md` and `docs/compatibility.md` before changing the adapter.
 Read `docs/design.md` before changing storage or authorization.
@@ -53,7 +53,7 @@ bun run demo
 ```
 
 `check` runs TypeScript checks and the deterministic core tests.
-`test:integration` requires the `opencode` executable at version 2.0.26.
+`test:integration` requires the `opencode` executable at version 2.0.x.
 The integration script starts a private service and a loopback model fixture.
 The script does not use the user's service, configuration, credentials, or database.
 The script keeps diagnostic files in its reported temporary directory.
@@ -174,7 +174,7 @@ Read `docs/verification.md` for the real-model results and failed development at
 ## Adapter rules
 
 Use the V2 documentation at `https://opencode.ai/v2/docs/`.
-Use the installed 2.0.26 declarations to check the pinned implementation.
+Use the installed 2.0.26 declarations to check the supported implementation.
 Do not infer V2 behavior from V1 documentation or the generic config schema.
 
 The `prompt` hook is not an exactly-once turn admission boundary.

@@ -210,7 +210,8 @@ test("adapter rejects unverified hosts and invalid configuration before creating
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-adapter-"));
   try {
     const database = join(root, "memory.sqlite"), options = { database, scopeId: "u:p", fakeSummarizer: true };
-    await expect(plugin.setup({ app: { version: "2.0.27" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
+    await expect(plugin.setup({ app: { version: "2.1.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
+    await expect(plugin.setup({ app: { version: "3.0.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     for (const invalid of [{ waitMs: 0 }, { waitMs: 1.5 }, { memoryBytes: -1 }, { safetyTokens: 0 }, { database: "relative.sqlite" }, { fakeSummarizer: false }]) {
       await expect(plugin.setup({ app: { version: "2.0.26" }, options: { ...options, ...invalid } } as any)).rejects.toThrow("CONFIG");
     }
@@ -287,7 +288,7 @@ test("adapter cannot consume jobs from a database assigned to another trust scop
   try {
     const database = join(root, "memory.sqlite"), store = new Store(database);
     new Engine(store).register("original", "trusted:scope", "stable"); store.close();
-    await plugin.setup({ app: { version: "2.0.26" }, options: { database, fakeSummarizer: true } } as any);
+    await plugin.setup({ app: { version: "2.0.99" }, options: { database, fakeSummarizer: true } } as any);
     const inspect = new Store(database);
     try { expect(inspect.get("sessions", "original")).toMatchObject({ scopeId: "trusted:scope" }); expect(inspect.get("adapterErrors", "SCOPE_MISMATCH")).toBeTruthy(); expect(inspect.get("settings", "adapterScope")).toBeUndefined(); }
     finally { inspect.close(); }

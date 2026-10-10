@@ -4,7 +4,7 @@
 
 - macOS arm64.
 - Bun 1.4.2.
-- OpenCode 2.0.26.
+- OpenCode 2.0.x. The tested patch is 2.0.26.
 - Official V2 plugin API and the exact pinned `@opencode/plugin` dependency.
 - Private OpenCode service processes with a local OpenAI-compatible model fixture.
 

@@ -18,7 +18,7 @@ const api = async (method: string, path: string, data?: unknown) => {
   assert.equal(code, 0, `${method} ${path}: ${stderr}`); const value = stdout.trim() ? JSON.parse(stdout) : undefined;
   return value?.data ?? value;
 };
-const info = await api("GET", "/api/info"); assert.equal(info.version, "2.0.26");
+const info = await api("GET", "/api/info"); assert.match(info.version, /^2\.0\.\d+$/, "Test host must be OpenCode 2.0.x");
 const selected = providerOverride ? (await api("GET", "/api/model")).find((m: any) => m.providerID === providerOverride && m.id === modelOverride) : await api("GET", "/api/model/default");
 assert(selected?.enabled && selected.capabilities.tools, "Test model must be enabled and support tools.");
 const model = { providerID: selected.providerID, id: selected.id };

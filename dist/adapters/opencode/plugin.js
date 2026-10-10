@@ -1715,7 +1715,7 @@ function adoptMemory(sourceDatabase, targetDatabase, targetScopeId) {
 
 // src/adapters/opencode/settings.ts
 async function setupSettings(ctx, start) {
-  insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
+  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
   if (!ctx.rpc || !ctx.storage)
     return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;
@@ -2149,7 +2149,7 @@ function createRecoveryLoop(options) {
 
 // src/adapters/opencode/plugin.ts
 var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
-  insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
+  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
   const config = ctx.options;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);
@@ -2879,4 +2879,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=595E512C458EE14064756E2164756E21
+//# debugId=D8E912B47306129164756E2164756E21

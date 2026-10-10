@@ -4,7 +4,7 @@ OptChat uses Bun to manage memory across OpenCode sessions.
 Each session retains its own original records.
 The adapter shares summaries of completed, failed, and interrupted turns within the configured scope.
 
-**Tests use Bun 1.4.2 and OpenCode 2.0.26. The adapter rejects other host versions.**
+**Tests use Bun 1.4.2 and OpenCode 2.0.26. The adapter supports OpenCode 2.0.x and rejects other host versions.**
 These tests do not certify production use or guarantee correct model answers.
 
 ## Installation from Git
@@ -20,7 +20,7 @@ Dependencies can still require package-registry downloads. This project does not
 opencode plugin add github:ahlner/opencode-optchat#main
 ```
 
-1. Open your project in OpenCode 2.0.26.
+1. Open your project in OpenCode 2.0.x.
 2. Open the command palette with `Ctrl+P`.
 3. Select **OptChat settings**.
 4. Select a compactor model from your enabled models.
@@ -268,7 +268,7 @@ The deadline does not guarantee that the archive will fit the memory budget on t
 Use explicit options when you need a custom database path.
 Explicit options take precedence. The TUI does not overwrite them.
 
-1. Use OpenCode 2.0.26.
+1. Use OpenCode 2.0.x.
 2. Add the following entry to your project `opencode.jsonc`.
 3. Preserve existing configuration entries.
 4. Replace the database path and model identifiers.

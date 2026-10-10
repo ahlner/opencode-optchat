@@ -17,7 +17,7 @@ interface Config { database: string; projectId?: string; compactorModel?: { prov
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
-  insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
+  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
   const config = ctx.options as unknown as Config;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);

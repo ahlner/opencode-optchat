@@ -11,6 +11,7 @@ export interface MemoryStatus {
   publications: number;
   activeTurns: number;
   nativeTurns?: number;
+  remainingMessages?: number;
   jobs: { pending: number; running: number; expired: number; failed: number; done: number; revoked: number };
   lastError?: string;
 }
@@ -28,6 +29,13 @@ export function memoryStatus(database: string, enabled: boolean): MemoryStatus {
       status.publications = count("SELECT count(*) AS count FROM entities WHERE bucket='publications'");
       status.activeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='turns' AND json_extract(value,'$.outcome') IS NULL");
       status.nativeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='nativeActive'");
+      status.remainingMessages = count(`SELECT count(*) AS count FROM (
+        SELECT DISTINCT s.session,s.generation,
+          CASE WHEN instr(s.eventKey,':')>0 THEN substr(s.eventKey,1,instr(s.eventKey,':')-1) ELSE s.eventKey END AS message
+        FROM sources s WHERE NOT EXISTS (
+          SELECT 1 FROM nodes n WHERE n.tree=json_array('session',s.session,s.generation) AND n.start=s.seq AND n.count=1
+        )
+      )`);
       for (const row of db.query("SELECT status,count(*) AS count FROM jobs GROUP BY status").all() as { status: string; count: number }[])
         if (row.status in status.jobs) status.jobs[row.status as keyof typeof status.jobs] = row.count;
       status.jobs.expired = (db.query("SELECT count(*) AS count FROM jobs WHERE status='running' AND leaseUntil<=?").get(Date.now()) as { count: number }).count;

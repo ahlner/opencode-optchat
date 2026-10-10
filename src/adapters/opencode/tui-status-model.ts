@@ -6,6 +6,14 @@ export interface StatusIndicator {
 }
 
 export function statusIndicator(status: MemoryStatus): StatusIndicator {
+  const indicator = baseIndicator(status);
+  if (!status.enabled || status.remainingMessages === undefined) return indicator;
+  const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
+  if (status.remainingMessages || jobs) indicator.text += ` · ${status.remainingMessages} msgs left · ${jobs} jobs`;
+  return indicator;
+}
+
+function baseIndicator(status: MemoryStatus): StatusIndicator {
   if (!status.enabled) return { text: "OptChat: off", tone: "muted" };
   if (status.nativeTurns) {
     const preparation = status.jobs.failed ? "failed" : status.jobs.running ? `preparing ${status.jobs.running}`

@@ -1389,6 +1389,7 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
   publications: counts,
   activeTurns: counts,
   nativeTurns: counts,
+  remainingMessages: counts,
   lastError: { type: "string" },
   jobs: {
     type: "object",
@@ -1430,6 +1431,13 @@ function memoryStatus(database, enabled) {
       status.publications = count("SELECT count(*) AS count FROM entities WHERE bucket='publications'");
       status.activeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='turns' AND json_extract(value,'$.outcome') IS NULL");
       status.nativeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='nativeActive'");
+      status.remainingMessages = count(`SELECT count(*) AS count FROM (
+        SELECT DISTINCT s.session,s.generation,
+          CASE WHEN instr(s.eventKey,':')>0 THEN substr(s.eventKey,1,instr(s.eventKey,':')-1) ELSE s.eventKey END AS message
+        FROM sources s WHERE NOT EXISTS (
+          SELECT 1 FROM nodes n WHERE n.tree=json_array('session',s.session,s.generation) AND n.start=s.seq AND n.count=1
+        )
+      )`);
       for (const row of db.query("SELECT status,count(*) AS count FROM jobs GROUP BY status").all())
         if (row.status in status.jobs)
           status.jobs[row.status] = row.count;
@@ -2584,4 +2592,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=238C09FF269322A264756E2164756E21
+//# debugId=B7F007EF789B3D5464756E2164756E21

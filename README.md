@@ -42,6 +42,13 @@ Database and scope identifiers remain fixed in this dialog to prevent accidental
 
 ### Memory status and recovery
 
+The live status bar shows `N msgs left` for imported messages with unfinished original summaries.
+It groups tool parts from the same host message into one message count.
+The separate `N jobs` count includes pending, running, and failed summary jobs, including parent and publication jobs.
+These counts cover the shared database, not only the visible session.
+Messages that the adapter has not imported are not included yet.
+Zero messages can therefore appear while derived summary jobs remain.
+
 The terminal status bar shows OptChat on the home screen and in sessions.
 It reads the current Location's server status every five seconds while visible.
 The indicator does not start compaction or make model calls.

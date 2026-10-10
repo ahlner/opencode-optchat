@@ -1,12 +1,36 @@
 import { describe, expect, test } from "bun:test";
 import { createStatusReader, statusIndicator, type StatusIndicator } from "../src/adapters/opencode/tui-status-model.ts";
 import type { MemoryStatus } from "../src/adapters/opencode/settings-status.ts";
+import { memoryStatus } from "../src/adapters/opencode/settings-status.ts";
+import { Store, Engine } from "../src/index.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const ready = (): MemoryStatus => ({ enabled: true, databaseExists: false, sessions: 0, originals: 0,
   summaries: 0, publications: 0, activeTurns: 0,
   jobs: { pending: 0, running: 0, expired: 0, failed: 0, done: 0, revoked: 0 } });
 
 describe("terminal memory status", () => {
+  test("counts distinct unfinished messages and keeps derived work visible", async () => {
+    const root = mkdtempSync(join(tmpdir(), "optchat-status-count-")), path = join(root, "memory.sqlite");
+    const store = new Store(path), engine = new Engine(store);
+    try {
+      engine.register("a", "scope", "p"); engine.admit("a", "turn");
+      for (const eventKey of ["msg_first:call", "msg_first:result", "msg_second:text"]) engine.append({ sessionId: "a", generation: 0, eventKey, turnId: "turn", kind: "assistant", payload: "Evidence", timestamp: "2026-10-10T00:00:00Z", projectId: "p" });
+      engine.finish("a", "turn", "completed");
+      expect(memoryStatus(path, true).remainingMessages).toBe(2);
+      await engine.workOne(); expect(memoryStatus(path, true).remainingMessages).toBe(2);
+      await engine.workOne(); expect(memoryStatus(path, true).remainingMessages).toBe(1);
+      await engine.workOne(); const status = memoryStatus(path, true);
+      expect(status.remainingMessages).toBe(0);
+      expect(statusIndicator(status).text).toContain("0 msgs left");
+      expect(statusIndicator(status).text).toContain("jobs");
+      status.nativeTurns = 1; status.jobs.failed = 1;
+      expect(statusIndicator(status).text).toContain("native · failed · 0 msgs left");
+      await engine.drain(); expect(statusIndicator(memoryStatus(path, true)).text).toBe("OptChat: ready");
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
   test("shows disabled, ready, active, processing, and failed states", () => {
     const status = ready();
     expect(statusIndicator(status).text).toBe("OptChat: ready");

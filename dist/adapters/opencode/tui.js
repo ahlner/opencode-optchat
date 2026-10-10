@@ -29,6 +29,7 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
   publications: counts,
   activeTurns: counts,
   nativeTurns: counts,
+  remainingMessages: counts,
   lastError: { type: "string" },
   jobs: {
     type: "object",
@@ -144,6 +145,15 @@ import { createSignal, onCleanup, onMount } from "solid-js";
 
 // src/adapters/opencode/tui-status-model.ts
 function statusIndicator(status) {
+  const indicator = baseIndicator(status);
+  if (!status.enabled || status.remainingMessages === undefined)
+    return indicator;
+  const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
+  if (status.remainingMessages || jobs)
+    indicator.text += ` \xB7 ${status.remainingMessages} msgs left \xB7 ${jobs} jobs`;
+  return indicator;
+}
+function baseIndicator(status) {
   if (!status.enabled)
     return { text: "OptChat: off", tone: "muted" };
   if (status.nativeTurns) {
@@ -260,4 +270,4 @@ export {
   tui_default as default
 };
 
-//# debugId=3894711D4C29E1B864756E2164756E21
+//# debugId=798A94479A8ACC3B64756E2164756E21

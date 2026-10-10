@@ -353,6 +353,32 @@ export class Engine {
   recoverProviderFailures(scopeId: string): number {
     return this.recoverFailed(scopeId, "provider-recovery", "temporary-1", (_input, error) => !/rate[ -]?limit|too many requests|\b429\b/i.test(error) && temporaryProviderError(error));
   }
+  repairDanglingJobs(scopeId: string): number {
+    return this.store.transaction(() => {
+      const trees = new Set<string>(); let count = 0;
+      for (const row of this.store.db.query("SELECT id,input FROM jobs WHERE status IN ('pending','running','failed')").all() as { id: string; input: string }[]) {
+        const input = JSON.parse(row.input) as Job["input"];
+        if (input.type === "leaf") continue;
+        const turn = input.type === "publication" ? this.store.get<Turn>("turns", input.turnKey) : undefined;
+        const tree = input.type === "parent" ? input.tree : turn ? sessionTree(turn.sessionId, turn.generation) : undefined;
+        if (!tree) continue;
+        const [kind, id, generation] = JSON.parse(tree);
+        const session = kind === "session" ? this.store.get<Session>("sessions", id) : undefined;
+        if (kind === "shared" ? tree !== sharedTree(scopeId, this.scope(scopeId).epoch) : !session || session.disabled || session.scopeId !== scopeId || session.generation !== generation) continue;
+        const dependencies = input.type === "parent" ? input.children : input.cover;
+        if (dependencies.every(id => this.store.db.query("SELECT 1 FROM nodes WHERE id=?").get(id))) continue;
+        this.store.db.query("UPDATE jobs SET status='revoked',fence=fence+1,leaseUntil=0,error=NULL,ownerPid=NULL,ownerToken=NULL WHERE id=?").run(row.id);
+        trees.add(tree); count++;
+      }
+      for (const tree of trees) {
+        const nodes = (this.store.db.query("SELECT value FROM nodes WHERE tree=? ORDER BY count,start").all(tree) as { value: string }[]).map(r => JSON.parse(r.value) as Node);
+        for (const node of nodes) this.writeNode(node);
+      }
+      this.schedulePublications();
+      for (const session of this.store.all<Session>("sessions")) if (session.scopeId === scopeId && !session.disabled && !this.preparationStatus(session.id).failed && this.store.get<{ code: string }>("adapterErrors", session.id)?.code === "COMPACTION_FAILED") this.store.remove("adapterErrors", session.id);
+      return count;
+    });
+  }
   private recoverFailed(scopeId: string, category: string, revision: string, accepted: (input: Job["input"], error: string) => boolean): number {
     return this.store.transaction(() => {
       const marker = key(category, scopeId, revision);
@@ -361,6 +387,7 @@ export class Engine {
       for (const row of this.store.db.query("SELECT id,input,error FROM jobs WHERE status='failed'").all() as { id: string; input: string; error: string }[]) {
         const input = JSON.parse(row.input) as Job["input"];
         if (!accepted(input, String(row.error ?? ""))) continue;
+        if (input.type !== "leaf" && !(input.type === "parent" ? input.children : input.cover).every(id => this.store.db.query("SELECT 1 FROM nodes WHERE id=?").get(id))) continue;
         const turn = input.type === "publication" ? this.store.get<Turn>("turns", input.turnKey) : undefined;
         const [type, sessionId] = input.type === "publication" ? ["session", turn?.sessionId] : JSON.parse(input.tree);
         const shared = input.type === "parent" && input.tree === sharedTree(scopeId, this.scope(scopeId).epoch);
@@ -380,8 +407,11 @@ export class Engine {
     return this.store.transaction(() => {
       const nodes = (this.store.db.query("SELECT value FROM nodes").all() as { value: string }[]).map(r => JSON.parse(r.value) as Node);
       const belongs = (n: Node) => { const tree = JSON.parse(n.tree); return tree[0] === "shared" ? tree[1] === scopeId : tree[0] === "session" && this.store.get<Session>("sessions", tree[1])?.scopeId === scopeId; };
+      const retainedIds = new Set(nodes.map(n => n.id));
       const bad = new Set(nodes.filter(n => {
-        if (!belongs(n) || ["lossless-local", "deterministic-fixture"].includes(n.model)) return false;
+        if (!belongs(n)) return false;
+        if (n.children.some(id => !retainedIds.has(id))) return true;
+        if (["lossless-local", "deterministic-fixture"].includes(n.model)) return false;
         if (!validSummary(n.text, "")) return true;
         if (!n.tree.startsWith('["session"') || validSummary(n.text, "tool_call")) return false;
         const [, sessionId, generation] = JSON.parse(n.tree);
@@ -397,7 +427,7 @@ export class Engine {
       const ranges = new Set(nodes.filter(n => bad.has(n.id)).map(n => key(n.tree, n.start, n.count)));
       for (const row of this.store.db.query("SELECT id,input FROM jobs").all() as { id: string; input: string }[]) {
         const input = JSON.parse(row.input) as Job["input"];
-        const dependencyChanged = input.type === "parent" ? input.children.some(id => bad.has(id)) : input.type === "publication" && input.cover.some(id => bad.has(id));
+        const dependencyChanged = input.type === "parent" ? input.children.some(id => bad.has(id) || !retainedIds.has(id)) : input.type === "publication" && input.cover.some(id => bad.has(id) || !retainedIds.has(id));
         const rebuild = dependencyChanged || (input.type === "publication" ? retired.some(p => key(p.sessionId, p.generation, p.turnId) === input.turnKey)
           : ranges.has(key(input.tree, input.start, input.type === "leaf" ? 1 : input.count)));
         if (rebuild) {

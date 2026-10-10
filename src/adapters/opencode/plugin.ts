@@ -71,6 +71,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event)) activeJob = undefined;
   } }), retrieval = new Retrieval(engine);
   const repairedNodes = engine.repairInvalidSummaries(config.scopeId);
+  const repairedJobs = engine.repairDanglingJobs(config.scopeId);
+  if (repairedJobs) diagnostics.emit("dependencies.repaired", { count: repairedJobs });
   if (repairedNodes) diagnostics.emit("summary.repaired", { count: repairedNodes });
   const recoveredBatches = engine.recoverRejectedBatches(config.scopeId);
   if (recoveredBatches) diagnostics.emit("batch.recovered", { count: recoveredBatches });

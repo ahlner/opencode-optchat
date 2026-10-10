@@ -142,6 +142,9 @@ Repeated failures still require operator review or confirmed retry. An existing 
 
 The corrected adapter also schedules recognizable cached provider-unavailability failures once per database scope.
 This recovery excludes authorization failures, invalid credentials, obsolete generations, and other scopes.
+
+Startup also revokes obsolete jobs whose child summaries no longer exist.
+It schedules replacements from current durable nodes without deleting originals or retrying missing node IDs.
 It does not clear an existing background pause or permit indefinite restart retries.
 
 The lease fix recovers an expired lease only when its fence remains unchanged.

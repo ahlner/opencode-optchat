@@ -773,3 +773,22 @@ This single trial is not a repeated semantic benchmark. The injected-outage test
 
 The native terminal test passed six checks without model calls in `optchat-tui-SoOqbZ`.
 The dependency audit passed for 428 installed package instances, with no bundled third-party source.
+# Missing dependency recovery
+
+The owner reported `OptChat: native · failed` after the leaf batching update.
+The metadata log recorded `NOT_FOUND` for a parent job before any model request.
+A private consistent database backup confirmed one missing child ID and an existing replacement at the same coordinates.
+Six obsolete pending or failed jobs referenced deleted summaries.
+
+The corrected startup fences those jobs and schedules current dependencies.
+It does not revive obsolete IDs during batch or provider recovery.
+Applying the repair to the private backup removed all failed jobs without changing the original record count.
+A second repair pass changed nothing.
+The owner database remained unchanged during this inspection.
+
+Regression tests cover replacement dependencies, live claim fencing, scope isolation, and unchanged snapshots.
+The fix does not prove complete semantic correctness of generated summaries.
+
+The final check passed 113 tests with 12,068 assertions and TypeScript validation.
+The packed plugin passed 23 lifecycle groups and 25 settings and recovery groups in private OpenCode instances.
+The diagnostic directories were `optchat-integration-I9BFwE` and `optchat-integration-MKw8iL` under the approved temporary directory.

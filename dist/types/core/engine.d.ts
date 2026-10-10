@@ -75,6 +75,7 @@ export declare class Engine {
     retryFailed(): void;
     recoverRejectedBatches(scopeId: string): number;
     recoverProviderFailures(scopeId: string): number;
+    repairDanglingJobs(scopeId: string): number;
     private recoverFailed;
     repairInvalidSummaries(scopeId: string): number;
     markInherited(sessionId: string, id: string): void;

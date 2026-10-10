@@ -6,6 +6,41 @@ import { Retrieval } from "../src/core/retrieval.ts";
 import { MemoryError, type Node, type SourceRecord, type Publication } from "../src/core/types.ts";
 
 const fact = "Verified evidence. ".repeat(16);
+test("stale parent dependencies are fenced and replaced without retrying missing node IDs", async () => {
+  const store = new Store(":memory:");
+  try {
+    const engine = new Engine(store, new FakeSummarizer());
+    engine.register("a", "scope", "p"); engine.admit("a", "turn");
+    append(engine, "a", "turn", 0); append(engine, "a", "turn", 1); engine.finish("a", "turn", "completed");
+    await engine.workOne(); await engine.workOne();
+    const originals = engine.sources("a", 0);
+    const tree = '["session","a",0]', left = engine.findNode(tree, 0, 1)!;
+    const stale = store.enqueue({ type: "parent", tree, start: 0, count: 2, children: [left.id, "deleted-old-child"] });
+    store.db.query("UPDATE jobs SET status='failed',error='MemoryError: SUMMARY_BATCH_INVALID: rejected',fence=7 WHERE id=?").run(stale);
+    expect(engine.recoverRejectedBatches("scope")).toBe(0);
+    expect(engine.repairDanglingJobs("scope")).toBe(1);
+    expect(store.db.query("SELECT status,fence,error FROM jobs WHERE id=?").get(stale)).toEqual({ status: "revoked", fence: 8, error: null });
+    expect(engine.repairDanglingJobs("scope")).toBe(0);
+    await engine.drain(); expect(store.all("publications")).toHaveLength(1);
+    expect(engine.sources("a", 0)).toEqual(originals);
+    expect(engine.preparationStatus("a").failed).toBe(0);
+    expect(engine.findNode(tree, 0, 2)?.children).not.toContain("deleted-old-child");
+  } finally { store.close(); }
+});
+
+test("dangling-job repair fences live claims but preserves other scopes and registered snapshots", async () => {
+  const store = new Store(":memory:");
+  try {
+    const engine = new Engine(store); engine.register("a", "scope", "p"); engine.register("b", "other", "p");
+    const snapshot = engine.admit("a", "empty").snapshot; engine.finish("a", "empty", "completed"); await engine.drain();
+    const one = store.enqueue({ type: "parent", tree: '["session","a",0]', start: 0, count: 2, children: ["missing-a", "missing-b"] });
+    const other = store.enqueue({ type: "parent", tree: '["session","b",0]', start: 0, count: 2, children: ["missing-a", "missing-b"] });
+    store.db.query("UPDATE jobs SET status='running',fence=5,leaseUntil=9999999999999 WHERE id=?").run(one);
+    expect(engine.repairDanglingJobs("scope")).toBe(1); engine.validateSnapshot(snapshot);
+    expect(store.db.query("SELECT status,fence FROM jobs WHERE id=?").get(one)).toEqual({ status: "revoked", fence: 6 });
+    expect(store.db.query("SELECT status FROM jobs WHERE id=?").get(other)).toEqual({ status: "pending" });
+  } finally { store.close(); }
+});
 function reply(prompt: string): string {
   return prompt.includes("BATCH_CONTRACT") ? JSON.stringify(JSON.parse(prompt.split("UNTRUSTED_JSON_DATA:\n")[1]!).map((r: any) => ({ id: r.id, text: fact }))) : fact;
 }

@@ -748,6 +748,41 @@ class Engine {
   recoverProviderFailures(scopeId) {
     return this.recoverFailed(scopeId, "provider-recovery", "temporary-1", (_input, error) => !/rate[ -]?limit|too many requests|\b429\b/i.test(error) && temporaryProviderError(error));
   }
+  repairDanglingJobs(scopeId) {
+    return this.store.transaction(() => {
+      const trees = new Set;
+      let count = 0;
+      for (const row of this.store.db.query("SELECT id,input FROM jobs WHERE status IN ('pending','running','failed')").all()) {
+        const input = JSON.parse(row.input);
+        if (input.type === "leaf")
+          continue;
+        const turn = input.type === "publication" ? this.store.get("turns", input.turnKey) : undefined;
+        const tree = input.type === "parent" ? input.tree : turn ? sessionTree(turn.sessionId, turn.generation) : undefined;
+        if (!tree)
+          continue;
+        const [kind, id, generation] = JSON.parse(tree);
+        const session = kind === "session" ? this.store.get("sessions", id) : undefined;
+        if (kind === "shared" ? tree !== sharedTree(scopeId, this.scope(scopeId).epoch) : !session || session.disabled || session.scopeId !== scopeId || session.generation !== generation)
+          continue;
+        const dependencies = input.type === "parent" ? input.children : input.cover;
+        if (dependencies.every((id) => this.store.db.query("SELECT 1 FROM nodes WHERE id=?").get(id)))
+          continue;
+        this.store.db.query("UPDATE jobs SET status='revoked',fence=fence+1,leaseUntil=0,error=NULL,ownerPid=NULL,ownerToken=NULL WHERE id=?").run(row.id);
+        trees.add(tree);
+        count++;
+      }
+      for (const tree of trees) {
+        const nodes = this.store.db.query("SELECT value FROM nodes WHERE tree=? ORDER BY count,start").all(tree).map((r) => JSON.parse(r.value));
+        for (const node of nodes)
+          this.writeNode(node);
+      }
+      this.schedulePublications();
+      for (const session of this.store.all("sessions"))
+        if (session.scopeId === scopeId && !session.disabled && !this.preparationStatus(session.id).failed && this.store.get("adapterErrors", session.id)?.code === "COMPACTION_FAILED")
+          this.store.remove("adapterErrors", session.id);
+      return count;
+    });
+  }
   recoverFailed(scopeId, category, revision, accepted) {
     return this.store.transaction(() => {
       const marker = key(category, scopeId, revision);
@@ -758,6 +793,8 @@ class Engine {
       for (const row of this.store.db.query("SELECT id,input,error FROM jobs WHERE status='failed'").all()) {
         const input = JSON.parse(row.input);
         if (!accepted(input, String(row.error ?? "")))
+          continue;
+        if (input.type !== "leaf" && !(input.type === "parent" ? input.children : input.cover).every((id) => this.store.db.query("SELECT 1 FROM nodes WHERE id=?").get(id)))
           continue;
         const turn = input.type === "publication" ? this.store.get("turns", input.turnKey) : undefined;
         const [type, sessionId] = input.type === "publication" ? ["session", turn?.sessionId] : JSON.parse(input.tree);
@@ -792,8 +829,13 @@ class Engine {
         const tree = JSON.parse(n.tree);
         return tree[0] === "shared" ? tree[1] === scopeId : tree[0] === "session" && this.store.get("sessions", tree[1])?.scopeId === scopeId;
       };
+      const retainedIds = new Set(nodes.map((n) => n.id));
       const bad = new Set(nodes.filter((n) => {
-        if (!belongs(n) || ["lossless-local", "deterministic-fixture"].includes(n.model))
+        if (!belongs(n))
+          return false;
+        if (n.children.some((id) => !retainedIds.has(id)))
+          return true;
+        if (["lossless-local", "deterministic-fixture"].includes(n.model))
           return false;
         if (!validSummary(n.text, ""))
           return true;
@@ -820,7 +862,7 @@ class Engine {
       const ranges = new Set(nodes.filter((n) => bad.has(n.id)).map((n) => key(n.tree, n.start, n.count)));
       for (const row of this.store.db.query("SELECT id,input FROM jobs").all()) {
         const input = JSON.parse(row.input);
-        const dependencyChanged = input.type === "parent" ? input.children.some((id) => bad.has(id)) : input.type === "publication" && input.cover.some((id) => bad.has(id));
+        const dependencyChanged = input.type === "parent" ? input.children.some((id) => bad.has(id) || !retainedIds.has(id)) : input.type === "publication" && input.cover.some((id) => bad.has(id) || !retainedIds.has(id));
         const rebuild = dependencyChanged || (input.type === "publication" ? retired.some((p) => key(p.sessionId, p.generation, p.turnId) === input.turnKey) : ranges.has(key(input.tree, input.start, input.type === "leaf" ? 1 : input.count)));
         if (rebuild) {
           this.store.db.query("UPDATE jobs SET status=?,fence=fence+1,leaseUntil=0,error=NULL WHERE id=?").run(dependencyChanged ? "revoked" : "pending", row.id);
@@ -1923,6 +1965,9 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       activeJob = undefined;
   } }), retrieval = new Retrieval(engine);
   const repairedNodes = engine.repairInvalidSummaries(config.scopeId);
+  const repairedJobs = engine.repairDanglingJobs(config.scopeId);
+  if (repairedJobs)
+    diagnostics.emit("dependencies.repaired", { count: repairedJobs });
   if (repairedNodes)
     diagnostics.emit("summary.repaired", { count: repairedNodes });
   const recoveredBatches = engine.recoverRejectedBatches(config.scopeId);
@@ -2538,4 +2583,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=B2524764D9FA5DA364756E2164756E21
+//# debugId=25F423544D88DDBD64756E2164756E21

@@ -5,6 +5,21 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/storage/store.ts";
 import { Engine } from "../src/core/engine.ts";
 import { compactorRequest } from "../src/adapters/opencode/compactor-request.ts";
+import { providerRetryDelay, temporaryProviderError } from "../src/core/provider-error.ts";
+
+test("wrapped retry metadata respects provider delays and permanent causes", async () => {
+  const now = Date.parse("2026-10-10T12:00:00Z");
+  expect(providerRetryDelay({ cause: { headers: new Headers({ "Retry-After": "Sat, 10 Oct 2026 12:00:10 GMT" }) } }, now)).toBe(10000);
+  expect(providerRetryDelay({ message: "Retry after 1500 ms", cause: { retryAfterMs: 2500 } })).toBe(2500);
+  const wrapped = { message: "UnavailableError", cause: { status: 429, headers: { "Retry-After": "3" } } };
+  let calls = 0; const delays: number[] = [];
+  expect(await compactorRequest(async () => { if (++calls === 1) throw wrapped; return "ok"; }, 30000, async ms => { delays.push(ms); })).toBe("ok");
+  expect(delays).toEqual([3000]);
+  expect(temporaryProviderError({ ...wrapped, cause: { status: 401 } })).toBe(false);
+  const cycle: { status: number; cause?: unknown } = { status: 429 }; cycle.cause = cycle;
+  expect(temporaryProviderError(cycle)).toBe(true);
+  expect(providerRetryDelay(cycle)).toBe(0);
+});
 
 test("rate limits retry with bounded delays and one shared deadline", async () => {
   let calls = 0;

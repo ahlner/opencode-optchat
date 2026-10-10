@@ -12,7 +12,7 @@ Only ready leaves or ready parents inside one completed session turn can share a
 Shared-tree parents and parents spanning different turns remain separate.
 Model output limits determine the batch size, up to eight jobs.
 Every batch output has a checked item ID, a finished-text check, and its own 512-byte limit.
-Malformed responses retry at most three times and never create partial batch nodes.
+Malformed responses permit at most five model attempts and never create partial batch nodes.
 
 Leaf batches contain at most 10,000 projected UTF-8 bytes, or the smaller configured chunk limit.
 Every original retains its independent source reference and complete payload.
@@ -162,6 +162,15 @@ A crash before commit leaves a job that another worker can claim.
 A model error marks the job as failed.
 The operator can schedule another attempt.
 The summarizer retries invalid output lengths within a fixed attempt limit.
+
+The default limit is five attempts for single summaries and batches.
+Correction prompts retain the original evidence and include previous responses only when they fit within 2,048 UTF-8 bytes.
+The decoder reports the final rejection code when single-summary correction fails.
+
+The comparison implementation [pi-optchat](https://github.com/jonaslsaa/pi-optchat/blob/main/src/compactor.ts) also uses five attempts.
+Its reviewed implementation permits a configurable 640-byte acceptance threshold and returns its shortest response after exhaustion.
+This engine retains its mandatory 512-byte limit and rejects oversized responses after exhaustion.
+More correction attempts cannot guarantee valid or faithful model output.
 It never cuts output bytes to satisfy the limit.
 
 The adapter limits atomic claims to one unexpired running job per database.

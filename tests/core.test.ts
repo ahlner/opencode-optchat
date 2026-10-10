@@ -402,7 +402,7 @@ describe("bounded real summarizer and host transcript mapping", () => {
     const s = new ModelSummarizer(async p => { prompts.push(p); return prompts.length === 1 ? "🙂".repeat(129) : "Verified result: Bun tests passed."; }, "configured/model");
     expect((await s.summarize("historical result")).text).toContain("Verified result");
     expect(prompts[1]).toContain("516 UTF-8 bytes");
-    await expect(new ModelSummarizer(async () => "🙂".repeat(129), "bad", 12000, 2).summarize("x")).rejects.toThrow("512 UTF-8");
+    await expect(new ModelSummarizer(async () => "🙂".repeat(129), "bad", 12000, 2).summarize("x")).rejects.toThrow("SUMMARY_SIZE");
   });
   test("oversized original is processed in full, bounded UTF-8 chunks and durable intermediates", async () => {
     const seen: string[] = [];

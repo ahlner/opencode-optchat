@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createStatusReader, statusIndicator, type StatusIndicator } from "../src/adapters/opencode/tui-status-model.ts";
+import { activityDetails, createStatusReader, statusIndicator, type StatusIndicator } from "../src/adapters/opencode/tui-status-model.ts";
 import type { MemoryStatus } from "../src/adapters/opencode/settings-status.ts";
 import { memoryStatus } from "../src/adapters/opencode/settings-status.ts";
 import { Store, Engine } from "../src/index.ts";
@@ -12,6 +12,34 @@ const ready = (): MemoryStatus => ({ enabled: true, databaseExists: false, sessi
   jobs: { pending: 0, running: 0, expired: 0, failed: 0, done: 0, revoked: 0 } });
 
 describe("terminal memory status", () => {
+  test("retry status excludes replaced claims and exports only error codes", () => {
+    const root = mkdtempSync(join(tmpdir(), "optchat-retry-status-")), path = join(root, "memory.sqlite");
+    const store = new Store(path);
+    try {
+      store.enqueue({ type: "leaf", tree: "tree", start: 0, source: "fixture" });
+      const job = store.claim(Date.now(), 60000, 1)!;
+      store.set("compactorRetry", "fixture", { jobId: job.id, fence: job.fence, attempt: 1, retryAt: Date.now() + 20000 });
+      const status = memoryStatus(path, true);
+      expect(status.retryInSeconds).toBeGreaterThan(0);
+      expect(statusIndicator(status).text).toContain(" · r");
+      expect(activityDetails(status)).toContain("retry 1/3");
+      expect(memoryStatus(path, false).retryInSeconds).toBeUndefined();
+      store.set("compactorRetry", "fixture", { jobId: job.id, fence: job.fence, attempt: 1, retryAt: Date.now() - 1 });
+      expect(memoryStatus(path, true).retryInSeconds).toBeUndefined();
+      store.set("compactorRetry", "fixture", { jobId: job.id, fence: job.fence, attempt: 1, retryAt: Date.now() + 20000 });
+      store.db.query("UPDATE jobs SET leaseUntil=? WHERE id=?").run(Date.now() - 1, job.id);
+      expect(memoryStatus(path, true).retryInSeconds).toBeUndefined();
+      store.db.query("UPDATE jobs SET leaseUntil=? WHERE id=?").run(Date.now() + 60000, job.id);
+      store.set("compactorRetry", "fixture", { jobId: job.id, fence: job.fence + 1, attempt: 1, retryAt: Date.now() + 20000 });
+      expect(memoryStatus(path, true).retryInSeconds).toBeUndefined();
+      store.fail(job, "MemoryError: SUMMARY_SIZE: private fixture text");
+      const failed = memoryStatus(path, true);
+      expect(failed.jobError).toBe("SUMMARY_SIZE");
+      expect(activityDetails(failed)).toContain("Blocked");
+      expect(JSON.stringify(failed)).not.toContain("private fixture text");
+      expect(failed.retryInSeconds).toBeUndefined();
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
   test("counts distinct unfinished messages and keeps derived work visible", async () => {
     const root = mkdtempSync(join(tmpdir(), "optchat-status-count-")), path = join(root, "memory.sqlite");
     const store = new Store(path), engine = new Engine(store);

@@ -52,7 +52,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     engine.options.parentBatchSize = Math.max(1, Math.min(8, Math.floor(model.limit.output / 3200)));
     engine.options.leafBatchSize = engine.options.parentBatchSize;
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
-    return diagnostics.span("compactor.request", () => compactorRequest(async signal => diagnostics.span("compactor.generate", async () => {
+    const retryId = crypto.randomUUID(), retryJob = activeJob;
+    const retryClaim = retryJob ? store.db.query("SELECT fence FROM jobs WHERE id=? AND status='running'").get(retryJob) as { fence: number } | null : undefined;
+    try { return await diagnostics.span("compactor.request", () => compactorRequest(async signal => diagnostics.span("compactor.generate", async () => {
+      store.remove("compactorRetry", retryId);
       const requestId = crypto.randomUUID(), jobId = activeJob, parentId = activeOperation;
       diagnostics.emit("compactor.sent", { requestId, jobId, parentId, inputHash: hash(prompt) });
       diagnostics.content("compactor.request", { requestId, jobId, parentId, model: config.compactorModel, prompt });
@@ -63,8 +66,12 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       diagnostics.emit("compactor.received", { requestId, jobId, parentId, outputBytes: Buffer.byteLength(result.text, "utf8") });
       diagnostics.emit("compactor.result", { jobId: activeJob, outputBytes: Buffer.byteLength(result.text, "utf8") });
       return result.text;
-    }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs })), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
-  }, key(config.compactorModel), 12000, 3, true);
+    }, { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") }), waitMs, undefined, signal, (attempt, delayMs) => {
+      diagnostics.emit("compactor.backoff", { jobId: activeJob, attempt, delayMs });
+      if (retryJob && retryClaim) store.set("compactorRetry", retryId, { jobId: retryJob, fence: retryClaim.fence, attempt, retryAt: Date.now() + delayMs });
+    }), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
+    } finally { store.remove("compactorRetry", retryId); }
+  }, key(config.compactorModel), 12000, 5, true);
   const engine = new Engine(store, compactor, { maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
     if (event === "job.claim" || event === "job.batch") activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });

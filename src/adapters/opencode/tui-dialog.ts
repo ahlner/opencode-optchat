@@ -1,6 +1,7 @@
 import type { Context } from "@opencode/plugin/tui/plugin";
 import { SettingsRpc, type Settings } from "./settings-rpc.ts";
 import type { MemoryStatus } from "./settings-status.ts";
+import { activityDetails } from "./tui-status-model.ts";
 
 export function registerSettingsDialog(ctx: Context) {
   const edit = async () => {
@@ -34,7 +35,7 @@ export function registerSettingsDialog(ctx: Context) {
       } else if (field === "scope") await ctx.ui.dialog.alert({ title: "Project memory", message: `Scope: ${draft.scopeId}\nDatabase: ${draft.database}\nContent log: ${draft.database}.content.ndjson\nThis dialog cannot change the trust boundary.` });
       else if (field === "status") {
         const status = await rpc.status({}, options) as MemoryStatus;
-        await ctx.ui.dialog.alert({ title: "Memory status", message: `Adapter: ${status.enabled ? "enabled" : "disabled"}\nDatabase: ${status.databaseExists ? "present" : "not created"}\nSessions: ${status.sessions}\nOriginals: ${status.originals}\nSummaries: ${status.summaries}\nPublications: ${status.publications}\nActive memory turns: ${status.activeTurns}\nNative turn markers: ${status.nativeTurns ?? 0}\nJobs: ${JSON.stringify(status.jobs)}\nLast error: ${status.lastError ?? "none"}\nDiagnostics: ${draft.database}.diagnostics.ndjson\nCounts cover this database. Status does not certify summary accuracy.` });
+        await ctx.ui.dialog.alert({ title: "Memory status", message: `${activityDetails(status)}\nAdapter: ${status.enabled ? "enabled" : "disabled"}\nDatabase: ${status.databaseExists ? "present" : "not created"}\nSessions: ${status.sessions}\nOriginals: ${status.originals}\nSummaries: ${status.summaries}\nPublications: ${status.publications}\nActive memory turns: ${status.activeTurns}\nNative turn markers: ${status.nativeTurns ?? 0}\nJobs: ${JSON.stringify(status.jobs)}\nLast error: ${status.lastError ?? "none"}\nDiagnostics: ${draft.database}.diagnostics.ndjson\nCounts cover this database. Status does not certify summary accuracy.` });
       } else if (field === "retry") {
          if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs and clears a background pause without deleting originals. Automatic preparation can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
           await rpc.retry({}, options); ctx.ui.toast.show({ message: "Failed jobs queued. Processing resumes on the next session reconciliation.", variant: "success" });

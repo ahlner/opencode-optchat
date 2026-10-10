@@ -20,6 +20,7 @@ const schema = {
 } as const;
 const counts = { type: "integer", minimum: 0 } as const;
 const statusSchema = { type: "object", additionalProperties: false, properties: {
+  jobError: { type: "string" }, retryInSeconds: counts, retryAttempt: counts,
   enabled: { type: "boolean" }, databaseExists: { type: "boolean" }, sessions: counts, originals: counts, summaries: counts,
   publications: counts, activeTurns: counts, nativeTurns: counts, remainingMessages: counts, totalMessages: counts, processedMessages: counts, inventoryComplete: { type: "boolean" }, lastError: { type: "string" }, jobs: { type: "object", additionalProperties: false,
     properties: { pending: counts, running: counts, expired: counts, failed: counts, done: counts, revoked: counts },

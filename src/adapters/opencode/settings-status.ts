@@ -17,6 +17,9 @@ export interface MemoryStatus {
   inventoryComplete?: boolean;
   jobs: { pending: number; running: number; expired: number; failed: number; done: number; revoked: number };
   lastError?: string;
+  jobError?: string;
+  retryInSeconds?: number;
+  retryAttempt?: number;
 }
 export function memoryStatus(database: string, enabled: boolean): MemoryStatus {
   const status: MemoryStatus = { enabled, databaseExists: existsSync(database), sessions: 0, originals: 0, summaries: 0, publications: 0, activeTurns: 0,
@@ -57,6 +60,17 @@ export function memoryStatus(database: string, enabled: boolean): MemoryStatus {
       for (const row of db.query("SELECT status,count(*) AS count FROM jobs GROUP BY status").all() as { status: string; count: number }[])
         if (row.status in status.jobs) status.jobs[row.status as keyof typeof status.jobs] = row.count;
       status.jobs.expired = (db.query("SELECT count(*) AS count FROM jobs WHERE status='running' AND leaseUntil<=?").get(Date.now()) as { count: number }).count;
+      const failure = db.query("SELECT error FROM jobs WHERE status='failed' ORDER BY rowid DESC LIMIT 1").get() as { error: string } | null;
+      if (failure) {
+        const codes = ["SUMMARY_SIZE", "SUMMARY_BATCH_INVALID", "TOOL_RESULT_ABSENCE", "DRAFTING_NOTES", "CONTROL_CHARACTERS", "ABSENT_CATEGORY_BOILERPLATE", "SUMMARY_INPUT_TOO_LARGE", "MODEL_LIMIT_UNKNOWN", "NOT_FOUND"];
+        status.jobError = codes.find(code => failure.error.includes(code)) ?? (/429|rate[ -]?limit/i.test(failure.error) ? "RATE_LIMIT" : "COMPACTION_FAILED");
+      }
+      const retry = db.query(`SELECT json_extract(r.value,'$.retryAt') AS retryAt,json_extract(r.value,'$.attempt') AS attempt
+        FROM entities r JOIN jobs j ON j.id=json_extract(r.value,'$.jobId')
+        WHERE r.bucket='compactorRetry' AND j.status='running' AND j.leaseUntil>?
+          AND j.fence=json_extract(r.value,'$.fence') AND json_extract(r.value,'$.retryAt')>?
+        ORDER BY retryAt LIMIT 1`).get(Date.now(), Date.now()) as { retryAt: number; attempt: number } | null;
+      if (enabled && retry) { status.retryInSeconds = Math.max(0, Math.ceil((retry.retryAt - Date.now()) / 1000)); status.retryAttempt = retry.attempt; }
       const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get() as { code: string } | null;
       if (error) status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
       const paused = count("SELECT count(*) AS count FROM entities WHERE bucket='settings' AND id='backgroundRecovery' AND json_extract(value,'$.paused')=1");

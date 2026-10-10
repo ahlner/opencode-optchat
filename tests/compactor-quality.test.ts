@@ -6,6 +6,16 @@ import { Retrieval } from "../src/core/retrieval.ts";
 import { MemoryError, type Node, type SourceRecord, type Publication } from "../src/core/types.ts";
 
 const fact = "Verified evidence. ".repeat(16);
+test("correction attempts retain bounded drafts and reject oversized output after five calls", async () => {
+  const prompts: string[] = [];
+  const model = new ModelSummarizer(async prompt => { prompts.push(prompt); return "🙂".repeat(129); }, "fixture");
+  await expect(model.summarize("Original evidence")).rejects.toThrow("SUMMARY_SIZE");
+  expect(prompts).toHaveLength(5);
+  expect(prompts[1]).toContain("516 UTF-8 bytes");
+  expect(prompts[1]).toContain(JSON.stringify("🙂".repeat(129)));
+  expect(prompts[4]).toContain("Original evidence");
+  await expect(new ModelSummarizer(async () => "Draft: unfinished", "fixture").summarize("Evidence")).rejects.toThrow("DRAFTING_NOTES");
+});
 test("batch size retries report measured bytes and reduce the requested text target", async () => {
   const prompts: string[] = [];
   const model = new ModelSummarizer(async prompt => {
@@ -18,7 +28,7 @@ test("batch size retries report measured bytes and reduce the requested text tar
   expect(prompts[1]).toContain('"bytes":530');
   expect(prompts[2]).toContain("Target 100 UTF-8 bytes");
   expect(results[0]!.text).toBe("Recorded outcome.");
-  expect(results[0]!.promptVersion).toBe("optchat-batch-3");
+  expect(results[0]!.promptVersion).toBe("optchat-batch-4");
 });
 test("stale parent dependencies are fenced and replaced without retrying missing node IDs", async () => {
   const store = new Store(":memory:");
@@ -71,8 +81,8 @@ test("drafting notes and call-only absence claims require a finished retry", asy
   const responses = [draft, "No result shown", "Recorded tool call. Its result is a separate original."];
   let calls = 0;
   const result = await new ModelSummarizer(async () => { calls++; return responses.shift()!; }, "fixture").summarize('{"kind":"tool_call"}');
-  expect(calls).toBe(3); expect(result.promptVersion).toBe("optchat-5");
-  await expect(new ModelSummarizer(async () => draft, "fixture").summarize("data")).rejects.toThrow("512 UTF-8 bytes");
+  expect(calls).toBe(3); expect(result.promptVersion).toBe("optchat-6");
+  await expect(new ModelSummarizer(async () => draft, "fixture").summarize("data")).rejects.toThrow("DRAFTING_NOTES");
 });
 
 test("retention revocation fences every member of an outstanding batch", async () => {

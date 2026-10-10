@@ -23,7 +23,7 @@ test("lossless summaries preserve exact UTF-8 input without model calls", async 
 test("oversized inputs still require validated model output with bounded retries", async () => {
   let calls = 0;
   const summarizer = new ModelSummarizer(async () => { calls++; return "😀".repeat(129); }, "fixture", 12000, 3, true);
-  await expect(summarizer.summarize("x".repeat(513))).rejects.toThrow("512 UTF-8 bytes");
+  await expect(summarizer.summarize("x".repeat(513))).rejects.toThrow("SUMMARY_SIZE");
   expect(calls).toBe(3);
 });
 

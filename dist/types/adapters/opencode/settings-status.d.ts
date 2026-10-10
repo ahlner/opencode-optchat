@@ -20,6 +20,9 @@ export interface MemoryStatus {
         revoked: number;
     };
     lastError?: string;
+    jobError?: string;
+    retryInSeconds?: number;
+    retryAttempt?: number;
 }
 export declare function memoryStatus(database: string, enabled: boolean): MemoryStatus;
 export declare function retryMemoryJobs(database: string): void;

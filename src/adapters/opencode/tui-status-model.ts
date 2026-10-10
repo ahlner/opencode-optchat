@@ -11,12 +11,23 @@ export function statusIndicator(status: MemoryStatus): StatusIndicator {
     const mode = status.nativeTurns ? "N" : "M";
     const state = status.jobs.failed || status.jobs.expired ? "!" : status.lastError === "BACKGROUND_PAUSED" ? "P" : "";
     const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
-    return { text: `OC:${mode}${state} ${status.processedMessages}/${status.totalMessages}${status.inventoryComplete ? "" : "?"}m · ${jobs}j`, tone: indicator.tone };
+    const retry = status.retryInSeconds === undefined ? "" : ` · r${status.retryInSeconds}s`;
+    return { text: `OC:${mode}${state} ${status.processedMessages}/${status.totalMessages}${status.inventoryComplete ? "" : "?"}m · ${jobs}j${retry}`, tone: indicator.tone };
   }
   if (!status.enabled || status.remainingMessages === undefined) return indicator;
   const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
   if (status.remainingMessages || jobs) indicator.text += ` · ${status.remainingMessages} msgs left · ${jobs} jobs`;
   return indicator;
+}
+
+export function activityDetails(status: MemoryStatus): string {
+  const total = status.totalMessages ?? 0, done = status.processedMessages ?? 0;
+  const ratio = total ? Math.min(1, Math.max(0, done / total)) : 0;
+  const filled = Math.floor(ratio * 12);
+  const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
+  const state = !status.enabled ? "Disabled" : status.lastError === "BACKGROUND_PAUSED" ? "Paused"
+    : status.jobs.failed || status.jobs.expired ? "Blocked" : jobs || done < total || !status.inventoryComplete ? "Preparing" : "Settled";
+  return `${state}\nMessages: [${"#".repeat(filled)}${"-".repeat(12 - filled)}] ${done}/${total}${status.inventoryComplete ? "" : " (inventory incomplete)"}\nJobs: ${jobs} unfinished, ${status.jobs.done} completed\nJob error: ${status.jobError ?? "none"}\nProvider retry: ${status.retryInSeconds === undefined ? "none scheduled" : `${status.retryInSeconds}s (retry ${status.retryAttempt ?? 0}/3)`}\nCounts cover retained history. New history and derived jobs can increase totals.`;
 }
 
 function baseIndicator(status: MemoryStatus): StatusIndicator {

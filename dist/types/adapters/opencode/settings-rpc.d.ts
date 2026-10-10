@@ -178,6 +178,17 @@ export declare const SettingsRpc: {
                 readonly type: "object";
                 readonly additionalProperties: false;
                 readonly properties: {
+                    readonly jobError: {
+                        readonly type: "string";
+                    };
+                    readonly retryInSeconds: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly retryAttempt: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
                     readonly enabled: {
                         readonly type: "boolean";
                     };
@@ -270,6 +281,17 @@ export declare const SettingsRpc: {
                 readonly type: "object";
                 readonly additionalProperties: false;
                 readonly properties: {
+                    readonly jobError: {
+                        readonly type: "string";
+                    };
+                    readonly retryInSeconds: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly retryAttempt: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
                     readonly enabled: {
                         readonly type: "boolean";
                     };

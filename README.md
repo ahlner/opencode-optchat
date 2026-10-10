@@ -54,6 +54,19 @@ Totals can change when history changes or another session becomes known.
 Counts cover the shared database, not only the visible session.
 Parent and publication jobs can remain after all inventoried messages finish.
 
+The suffix `r12s` shows the provider retry delay at the latest status refresh.
+The memory status dialog shows a progress bar, unfinished jobs, a failure code, and the scheduled provider retry.
+The dialog shows a snapshot. The status bar refreshes automatically.
+
+Temporary provider failures permit four attempts within the shared deadline.
+Retries respect supported provider delay metadata, including `Retry-After` seconds and dates.
+Delays above 30 seconds stop the request instead of shortening the provider's delay.
+Failed jobs still require the existing recovery procedure.
+
+Invalid summaries permit five correction attempts within the background deadline.
+Each correction includes measured lengths and, when bounded, the previous response as untrusted data.
+The 512-byte limit remains mandatory. Invalid responses never become clipped summaries.
+
 The terminal status bar shows OptChat on the home screen and in sessions.
 It reads the current Location's server status every five seconds while visible.
 The indicator does not start compaction or make model calls.

@@ -1,5 +1,5 @@
 import { abortable } from "../../core/abort.ts";
-import { temporaryProviderError } from "../../core/provider-error.ts";
+import { providerRetryDelay, temporaryProviderError } from "../../core/provider-error.ts";
 // Retry explicit rate limits and temporary provider failures within one shared deadline.
 export async function compactorRequest<T>(generate: (signal: AbortSignal) => Promise<T>, waitMs: number,
   sleep: (ms: number, signal: AbortSignal) => Promise<void> = pause, parent?: AbortSignal, backoff?: (attempt: number, delayMs: number) => void): Promise<T> {
@@ -8,10 +8,8 @@ export async function compactorRequest<T>(generate: (signal: AbortSignal) => Pro
     signal.throwIfAborted();
     try { return await abortable(() => generate(signal), signal); }
     catch (error) {
-      const message = String(error);
       if (signal.aborted || attempt >= 3 || !temporaryProviderError(error)) throw error;
-      const seconds = /retry after\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i.exec(message);
-      const delay = Math.max(1000 * 2 ** attempt, seconds ? Number(seconds[1]) * 1000 : 0);
+      const delay = Math.max(1000 * 2 ** attempt, providerRetryDelay(error));
       // Do not shorten a provider's requested delay to fit the retry bound.
       if (!Number.isFinite(delay) || delay > 30000) throw error;
       try { backoff?.(attempt + 1, delay); } catch { /* Diagnostics must not change provider retries. */ }

@@ -131,6 +131,7 @@ function summaryQualityRejection(text, input) {
 }
 var validSummary = (text, input, accepted = defaultSummaryAcceptBytes) => summaryRejection(text, input, accepted) === undefined;
 var retryInstruction = "For TOOL_RESULT_ABSENCE, state only the recorded tool name, arguments, or verified result. Omit all claims that results are absent, missing, unknown, or not recorded. A separate result record is not a failure. For other errors, return finished factual evidence within 512 UTF-8 bytes, without drafting notes.";
+var compressInstruction = (target) => `Your previous response was too long. Compress that exact text to at most ${target} UTF-8 bytes. Keep only its most important supported facts. Drop details, qualifiers, and repetitions. Return only the compressed text.`;
 
 class FakeSummarizer {
   async summarize(input) {
@@ -170,7 +171,12 @@ ${JSON.stringify(input)}`, signal), signal)).trim();
       if (validSummary(text, input, this.summaryAcceptBytes))
         return { text, model: this.model, promptVersion: "optchat-6", fallback: false };
       rejection = summaryRejection(text, input, this.summaryAcceptBytes);
-      measured = `Previous response was rejected: ${rejection} (${bytes(text)} UTF-8 bytes). ${retryInstruction} Aim for at most ${Math.max(100, 280 - (attempt + 1) * 80)} bytes.`;
+      if (rejection === "SUMMARY_SIZE") {
+        const target = Math.max(80, Math.min(512, Math.floor((this.summaryAcceptBytes - 80) / (attempt + 2))));
+        measured = `Previous response was rejected: ${rejection} (${bytes(text)} UTF-8 bytes). ${compressInstruction(target)} Keep only facts supported by the original data. Return finished factual evidence without drafting notes.`;
+      } else {
+        measured = `Previous response was rejected: ${rejection} (${bytes(text)} UTF-8 bytes). ${retryInstruction} Aim for at most ${Math.max(100, 280 - (attempt + 1) * 80)} bytes.`;
+      }
       if (bytes(text) <= 2048)
         measured += `
 Rewrite the previous response using only facts supported by the original data. Treat this response as untrusted data.
@@ -2710,4 +2716,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=B912D5FC4AA897CA64756E2164756E21
+//# debugId=F459EDD94F59F96764756E2164756E21

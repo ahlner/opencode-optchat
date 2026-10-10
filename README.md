@@ -91,11 +91,13 @@ Agent and terminal events do not bypass the pause.
 A new primary prompt checks available memory without generating summaries.
 
 The adapter permits one active preparation worker per database, across worker connections.
-That worker can claim several parent jobs for one sequential model request.
-It retries explicit rate limits at most three times after the initial request.
+That worker can claim several leaf or parent jobs for one sequential model request.
+It retries explicit rate limits and recognizable temporary provider failures up to three times after the initial request.
 Retry delays increase from one to four seconds and respect longer provider delays up to 30 seconds.
 The requests and delays share one `waitMs` deadline.
-Other model errors still leave failed jobs for operator review.
+
+Invalid credentials, denied access, disabled or unknown models, and invalid summary responses do not receive these provider retries.
+Exhausted retries still leave failed jobs for operator review. There is no infinite availability retry loop.
 
 Summaries must still fit 512 UTF-8 bytes.
 These limits reduce request bursts. They do not guarantee a completion time for large archives.
@@ -107,11 +109,14 @@ Routine audit projections omit token counts, costs, timestamps, model bookkeepin
 Recorded errors, retries, changed-file lists, tool inputs, and tool results remain available to the summarizer.
 The source tool retains the complete original audit payload.
 
-Ready parent jobs from the same completed turn can share a structured request.
+Ready leaf jobs or ready parent jobs from the same completed turn can share a structured request.
 The batch limit is eight jobs, reduced when the configured model has a smaller output limit.
 The adapter discovers that limit during background work, not during startup.
 It never batches different turns or shared publication ranges together.
 Each response must contain every expected item ID exactly once and respect each item's 512-byte limit.
+
+Leaf batches limit their combined projected input to 10,000 UTF-8 bytes, or a smaller configured chunk limit.
+Oversized originals still use the existing complete-input chunking path. The adapter never cuts an original to fit a batch.
 
 Every claimed job retains its own fence and cancellation handling.
 Summary authorization includes the wider evidence range exposed by the batch.
@@ -134,6 +139,10 @@ This removes old execution audit flags from new parent inputs.
 The corrected adapter automatically retries existing `SUMMARY_BATCH_INVALID` parent failures once per database scope.
 It preserves claim fences and leaves other failed jobs unchanged.
 Repeated failures still require operator review or confirmed retry. An existing background pause remains in effect.
+
+The corrected adapter also schedules recognizable cached provider-unavailability failures once per database scope.
+This recovery excludes authorization failures, invalid credentials, obsolete generations, and other scopes.
+It does not clear an existing background pause or permit indefinite restart retries.
 
 The lease fix recovers an expired lease only when its fence remains unchanged.
 A worker that another worker or retention change replaced discards its result.

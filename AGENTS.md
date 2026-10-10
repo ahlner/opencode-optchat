@@ -84,13 +84,18 @@ Interrupt background work for primary admission.
 Primary admission must not generate summaries or wait for backfill.
 
 Keep full originals when projecting audit data for summarization.
-Batch only ready parents from the same completed turn. Check every item ID and byte limit.
+Batch only ready leaves or ready parents from the same completed turn. Check every item ID and byte limit.
+Keep the combined leaf projection bounded. Use complete-input chunking for oversized originals.
 
 Retain each job's fence. Cancel all matching batch claims and reject replaced or revoked claims.
 Authorize each node's complete batch evidence range, not only its dyadic coordinates.
 
 Prefix retirement must exclude summaries that saw the removed suffix.
 Repair rejected cached evidence by rebuilding derived nodes, never by modifying originals or overwriting immutable summaries.
+
+Retry recognizable temporary provider failures within the shared deadline and a fixed attempt limit.
+Do not retry credentials, permission failures, disabled models, or malformed summaries as provider outages.
+Do not clear background pauses during one-time recovery of cached provider failures.
 
 Select native mode when complete memory is unavailable for a new turn.
 Preserve the native conversation and tool protocol. Remove memory tools and add an explicit unavailable notice.

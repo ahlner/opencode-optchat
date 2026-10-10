@@ -26,6 +26,29 @@ function abortable(run, signal) {
   });
 }
 
+// src/core/provider-error.ts
+function temporaryProviderError(error) {
+  const parts = [];
+  const seen = new Set;
+  for (let current = error;current !== undefined && !seen.has(current) && parts.length < 4; ) {
+    seen.add(current);
+    parts.push(String(current));
+    if (!current || typeof current !== "object")
+      break;
+    const value = current;
+    if (value.status !== undefined)
+      parts.push(`HTTP ${value.status}`);
+    if (value.statusCode !== undefined)
+      parts.push(`HTTP ${value.statusCode}`);
+    current = value.cause;
+  }
+  const text = parts.join(`
+`);
+  if (/unauthori[sz]ed|forbidden|invalid.*(?:api[ -]?key|credentials?|model)|model.*(?:not found|does not exist|not supported|unsupported|disabled)|insufficient.*(?:quota|credit)|payment required|\b40[0-4]\b/i.test(text))
+    return false;
+  return /rate[ -]?limit|too many requests|\b429\b|temporar(?:ily)? unavailable|service unavailable|overloaded|bad gateway|gateway timeout|\b50[234]\b|UnavailableError|PROVIDER_UNAVAILABLE|ECONNRESET|ETIMEDOUT|socket (?:connection )?closed/i.test(text);
+}
+
 // src/core/types.ts
 class MemoryError extends Error {
   code;
@@ -263,9 +286,9 @@ var jobFailureCode = (error) => {
   const text = String(error ?? "");
   if (/SUMMARY_BATCH_INVALID/.test(text))
     return "SUMMARY_BATCH_INVALID";
-  return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
+  return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : temporaryProviderError(error) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
-var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, compactEvidence: false };
+var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, leafBatchSize: 1, compactEvidence: false };
 
 class Engine {
   store;
@@ -277,6 +300,7 @@ class Engine {
     this.options = { ...defaults, ...options };
     insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
     insist(Number.isSafeInteger(this.options.parentBatchSize) && this.options.parentBatchSize >= 1 && this.options.parentBatchSize <= 16, "CONFIG", "Parent batch size must be between 1 and 16");
+    insist(Number.isSafeInteger(this.options.leafBatchSize) && this.options.leafBatchSize >= 1 && this.options.leafBatchSize <= 16, "CONFIG", "Leaf batch size must be between 1 and 16");
     insist(this.options.low >= 0 && this.options.high > this.options.low && this.options.chunkBytes >= 2048 && Number.isSafeInteger(this.options.leaseMs) && this.options.leaseMs >= 3, "CONFIG", "Invalid compaction thresholds or lease duration");
   }
   scope(id) {
@@ -486,10 +510,10 @@ class Engine {
     const result = await abortable(() => this.summarizer.summarize(text, signal), signal);
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
-  async workParentBatch(jobs, signal) {
+  async workEvidenceBatch(jobs, signal) {
     const report = (job, event, error) => {
       try {
-        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, batchSize: jobs.length, ...job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : {}, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
+        this.options.jobEvent?.(event, { jobId: job.id, kind: job.input.type, fence: job.fence, leaseUntil: job.leaseUntil, batchSize: jobs.length, ...job.input.type === "parent" ? { tree: job.input.tree, start: job.input.start, count: job.input.count } : job.input.type === "leaf" ? { tree: job.input.tree, start: job.input.start, count: 1, sourceId: job.input.source } : {}, ...error === undefined ? {} : { errorCode: jobFailureCode(error) } });
       } catch {}
     };
     for (const job of jobs)
@@ -508,15 +532,15 @@ class Engine {
     renewal.unref();
     try {
       const inputs = jobs.map((job) => {
-        insist(job.input.type === "parent", "JOB_SHAPE", "Only parent jobs can share a batch");
-        return this.parentInput(job.input.children);
+        insist(job.input.type !== "publication", "JOB_SHAPE", "Only session evidence jobs can share a batch");
+        return job.input.type === "leaf" ? this.leafInput(job.input.source) : this.parentInput(job.input.children);
       });
-      const evidenceNodes = jobs.flatMap((job) => job.input.type === "parent" ? job.input.children.map((id) => this.node(id)) : []);
+      const evidenceNodes = jobs.flatMap((job) => job.input.type === "parent" ? job.input.children.map((id) => this.node(id)) : job.input.type === "leaf" ? [{ start: job.input.start, count: 1 }] : []);
       const evidenceStart = Math.min(...evidenceNodes.map((node) => node.evidenceStart ?? node.start));
       const evidenceEnd = Math.max(...evidenceNodes.map((node) => node.evidenceEnd ?? node.start + node.count));
       const results = await abortable(() => this.summarizer.summarizeBatch(inputs, signal, jobs.map((job) => job.id)), signal);
       signal?.throwIfAborted();
-      insist(results.length === jobs.length && results.every((r) => r?.text?.trim() && bytes(r.text) <= 512), "SUMMARY_BATCH_INVALID", "Every parent requires a bounded summary");
+      insist(results.length === jobs.length && results.every((r) => r?.text?.trim() && bytes(r.text) <= 512), "SUMMARY_BATCH_INVALID", "Every evidence item requires a bounded summary");
       const committed = [];
       this.store.transaction(() => {
         for (const [index, job] of jobs.entries()) {
@@ -524,10 +548,14 @@ class Engine {
             report(job, "job.unowned");
             continue;
           }
-          insist(job.input.type === "parent", "JOB_SHAPE", "Expected a parent job");
-          job.input.children.forEach((id) => this.node(id));
+          insist(job.input.type !== "publication", "JOB_SHAPE", "Expected session evidence");
+          const children = job.input.type === "parent" ? job.input.children : [];
+          if (job.input.type === "leaf")
+            this.source(job.input.source);
+          else
+            children.forEach((id) => this.node(id));
           const result = results[index];
-          this.writeNode({ id: hash(key(job.id, result, evidenceStart, evidenceEnd)), tree: job.input.tree, start: job.input.start, count: job.input.count, children: job.input.children, inputs: [hash(inputs[index]), hash(JSON.stringify(inputs))], evidenceStart, evidenceEnd, ...result, bytes: bytes(result.text) });
+          this.writeNode({ id: hash(key(job.id, result, evidenceStart, evidenceEnd)), tree: job.input.tree, start: job.input.start, count: job.input.type === "parent" ? job.input.count : 1, children, ...job.input.type === "leaf" ? { source: job.input.source } : {}, inputs: [hash(inputs[index]), hash(JSON.stringify(inputs))], evidenceStart, evidenceEnd, ...result, bytes: bytes(result.text) });
           this.store.db.query("UPDATE jobs SET status='done' WHERE id=? AND fence=?").run(job.id, job.fence);
           committed.push(job);
         }
@@ -549,6 +577,10 @@ class Engine {
       clearInterval(renewal);
     }
     return true;
+  }
+  leafInput(sourceId) {
+    const r = this.source(sourceId);
+    return this.options.compactEvidence ? evidenceInput(r) : JSON.stringify({ kind: r.kind, timestamp: r.timestamp, turnId: r.turnId, callId: r.callId, truncated: r.truncated ?? false, payload: r.payload });
   }
   parentInput(children) {
     return children.map((id) => {
@@ -572,13 +604,44 @@ class Engine {
     const job = this.store.claim(Date.now(), this.options.leaseMs, this.options.maxRunningJobs);
     if (!job)
       return false;
-    if (job.input.type === "parent" && this.summarizer.summarizeBatch && this.options.parentBatchSize > 1) {
-      const input = job.input, tree = JSON.parse(input.tree);
-      const row = tree[0] === "session" ? this.store.db.query("SELECT value FROM entities WHERE bucket='turns' AND json_extract(value,'$.sessionId')=? AND json_extract(value,'$.generation')=? AND json_extract(value,'$.end') IS NOT NULL AND json_extract(value,'$.start')<=? AND json_extract(value,'$.end')>=? LIMIT 1").get(tree[1], tree[2], input.start, input.start + input.count) : null;
-      const turn = row ? JSON.parse(row.value) : undefined;
-      const peers = turn ? this.store.claimParentPeers(job, this.options.parentBatchSize - 1, this.options.leaseMs, turn.start, turn.end) : [];
-      if (peers.length)
-        return this.workParentBatch([job, ...peers], signal);
+    const claimedPeers = [];
+    try {
+      if (job.input.type !== "publication" && this.summarizer.summarizeBatch && (job.input.type === "parent" ? this.options.parentBatchSize : this.options.leafBatchSize) > 1) {
+        const input = job.input, tree = JSON.parse(input.tree);
+        const row = tree[0] === "session" ? this.store.db.query("SELECT value FROM entities WHERE bucket='turns' AND json_extract(value,'$.sessionId')=? AND json_extract(value,'$.generation')=? AND json_extract(value,'$.end') IS NOT NULL AND json_extract(value,'$.start')<=? AND json_extract(value,'$.end')>=? LIMIT 1").get(tree[1], tree[2], input.start, input.start + (input.type === "parent" ? input.count : 1)) : null;
+        const turn = row ? JSON.parse(row.value) : undefined;
+        if (turn && input.type === "parent") {
+          const peers = this.store.claimParentPeers(job, this.options.parentBatchSize - 1, this.options.leaseMs, turn.start, turn.end);
+          claimedPeers.push(...peers);
+          if (peers.length)
+            return this.workEvidenceBatch([job, ...peers], signal);
+        } else if (turn && input.type === "leaf") {
+          let size = bytes(this.leafInput(input.source));
+          const limit = Math.min(1e4, this.options.chunkBytes);
+          if (size <= limit) {
+            const peers = this.store.claimLeafPeers(job, this.options.leafBatchSize - 1, this.options.leaseMs, turn.start, turn.end), selected = [];
+            claimedPeers.push(...peers);
+            for (const peer of peers) {
+              insist(peer.input.type === "leaf", "JOB_SHAPE", "Expected a leaf peer");
+              const n = bytes(this.leafInput(peer.input.source));
+              if (size + n <= limit) {
+                selected.push(peer);
+                size += n;
+              } else
+                this.store.release(peer);
+            }
+            if (selected.length)
+              return this.workEvidenceBatch([job, ...selected], signal);
+          }
+        }
+      }
+    } catch (error) {
+      const owned = this.store.release(job);
+      for (const peer of claimedPeers)
+        this.store.release(peer);
+      if (owned)
+        throw error;
+      return true;
     }
     const report = (event, error) => {
       try {
@@ -599,12 +662,11 @@ class Engine {
       let text, tree, start, count, children = [], source;
       const input = job.input;
       if (input.type === "leaf") {
-        const r = this.source(input.source);
         source = input.source;
         tree = input.tree;
         start = input.start;
         count = 1;
-        text = this.options.compactEvidence ? evidenceInput(r) : JSON.stringify({ kind: r.kind, timestamp: r.timestamp, turnId: r.turnId, callId: r.callId, truncated: r.truncated ?? false, payload: r.payload });
+        text = this.leafInput(input.source);
       } else if (input.type === "parent") {
         tree = input.tree;
         start = input.start;
@@ -676,23 +738,39 @@ class Engine {
     this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run();
   }
   recoverRejectedBatches(scopeId) {
+    return this.recoverFailed(scopeId, "batch-recovery", "feedback-2", (input, error) => input.type === "parent" && error.startsWith("MemoryError: SUMMARY_BATCH_INVALID:"));
+  }
+  recoverProviderFailures(scopeId) {
+    return this.recoverFailed(scopeId, "provider-recovery", "temporary-1", (_input, error) => !/rate[ -]?limit|too many requests|\b429\b/i.test(error) && temporaryProviderError(error));
+  }
+  recoverFailed(scopeId, category, revision, accepted) {
     return this.store.transaction(() => {
-      const marker = key("batch-recovery", scopeId, "feedback-2");
+      const marker = key(category, scopeId, revision);
       if (this.store.get("settings", marker))
         return 0;
       let count = 0;
       const sessions = new Set;
-      for (const row of this.store.db.query("SELECT id,input FROM jobs WHERE status='failed' AND error LIKE 'MemoryError: SUMMARY_BATCH_INVALID:%'").all()) {
+      for (const row of this.store.db.query("SELECT id,input,error FROM jobs WHERE status='failed'").all()) {
         const input = JSON.parse(row.input);
-        if (input.type !== "parent")
+        if (!accepted(input, String(row.error ?? "")))
           continue;
-        const [type, sessionId] = JSON.parse(input.tree);
-        const session = this.store.get("sessions", sessionId);
-        if (type !== "session" || session?.scopeId !== scopeId || session.disabled || input.tree !== sessionTree(sessionId, session.generation))
+        const turn = input.type === "publication" ? this.store.get("turns", input.turnKey) : undefined;
+        const [type, sessionId] = input.type === "publication" ? ["session", turn?.sessionId] : JSON.parse(input.tree);
+        const shared = input.type === "parent" && input.tree === sharedTree(scopeId, this.scope(scopeId).epoch);
+        const session = type === "session" && typeof sessionId === "string" ? this.store.get("sessions", sessionId) : undefined;
+        if (!shared && (!session || session.scopeId !== scopeId || session.disabled))
+          continue;
+        if (!shared && (input.type === "publication" ? !turn?.outcome || turn.generation !== session.generation || session.broadcast === false || input.scopeId !== scopeId : input.tree !== sessionTree(sessionId, session.generation)))
           continue;
         this.store.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,error=NULL,ownerPid=NULL,ownerToken=NULL WHERE id=? AND status='failed'").run(row.id);
         count++;
-        sessions.add(sessionId);
+        if (session)
+          sessions.add(session.id);
+        if (shared) {
+          for (const s of this.store.all("sessions"))
+            if (s.scopeId === scopeId && !s.disabled)
+              sessions.add(s.id);
+        }
       }
       for (const id of sessions)
         if (!this.preparationStatus(id).failed && this.store.get("adapterErrors", id)?.code === "COMPACTION_FAILED")
@@ -997,14 +1075,20 @@ class Store {
     return row?.fence === job.fence && row.status === "running" && row.leaseUntil > Date.now();
   }
   claimParentPeers(anchor, limit, leaseMs, start, end) {
-    if (anchor.input.type !== "parent")
+    return this.claimEvidencePeers(anchor, limit, leaseMs, start, end, "parent");
+  }
+  claimLeafPeers(anchor, limit, leaseMs, start, end) {
+    return this.claimEvidencePeers(anchor, limit, leaseMs, start, end, "leaf");
+  }
+  claimEvidencePeers(anchor, limit, leaseMs, start, end, type) {
+    if (anchor.input.type === "publication" || anchor.input.type !== type)
       return [];
     const tree = anchor.input.tree;
     return this.transaction(() => {
       const now = Date.now();
       if (!this.db.query("SELECT 1 FROM jobs WHERE id=? AND fence=? AND status='running' AND ownerToken=? AND leaseUntil>?").get(anchor.id, anchor.fence, this.owner, now))
         return [];
-      const rows = this.db.query("SELECT * FROM jobs WHERE status='pending' AND json_extract(input,'$.type')='parent' AND json_extract(input,'$.tree')=? AND json_extract(input,'$.start')>=? AND json_extract(input,'$.start')+json_extract(input,'$.count')<=? ORDER BY rowid LIMIT ?").all(tree, start, end, Math.max(0, Math.min(15, limit)));
+      const rows = this.db.query("SELECT * FROM jobs WHERE status='pending' AND json_extract(input,'$.type')=? AND json_extract(input,'$.tree')=? AND json_extract(input,'$.start')>=? AND json_extract(input,'$.start')+COALESCE(json_extract(input,'$.count'),1)<=? ORDER BY rowid LIMIT ?").all(type, tree, start, end, Math.max(0, Math.min(15, limit)));
       return rows.map((row) => {
         const fence = row.fence + 1;
         this.db.query("UPDATE jobs SET status='running',fence=?,leaseUntil=?,attempts=attempts+1,ownerPid=?,ownerToken=? WHERE id=?").run(fence, now + leaseMs, process.pid, this.owner, row.id);
@@ -1184,4 +1268,4 @@ export {
   turnKey
 };
 
-//# debugId=1A4BA76441D0FF1F64756E2164756E21
+//# debugId=A55E8EC12368668F64756E2164756E21

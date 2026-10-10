@@ -16,6 +16,7 @@ export interface EngineOptions {
     broadcastSubagents: boolean;
     maxRunningJobs: number;
     parentBatchSize: number;
+    leafBatchSize: number;
     compactEvidence: boolean;
     jobEvent?: (event: string, details: {
         jobId: string;
@@ -66,12 +67,15 @@ export declare class Engine {
     private schedulePublications;
     private writeNode;
     private summarizeFull;
-    private workParentBatch;
+    private workEvidenceBatch;
+    private leafInput;
     private parentInput;
     workOne(signal?: AbortSignal): Promise<boolean>;
     drain(max?: number, signal?: AbortSignal): Promise<void>;
     retryFailed(): void;
     recoverRejectedBatches(scopeId: string): number;
+    recoverProviderFailures(scopeId: string): number;
+    private recoverFailed;
     repairInvalidSummaries(scopeId: string): number;
     markInherited(sessionId: string, id: string): void;
     projection(view: View, budget: number): Node[];

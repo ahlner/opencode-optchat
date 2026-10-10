@@ -731,3 +731,45 @@ Private reports remain in:
 This trial used synthetic evidence in newly created sessions, not the owner's pending batch or original conversation data.
 Initial inherited adapters could observe those test sessions. The corrected harness excludes that extra adapter locally.
 No owner database, service, credentials, or global configuration received a direct manual edit.
+## Leaf batching and temporary provider recovery
+
+The live trace showed predominantly individual leaf jobs after parent batching became available.
+A separate leaf failed with `PROVIDER_UNAVAILABLE`, which stopped automatic preparation until operator retry.
+
+The corrected worker batches ready leaves within the same completed turn, with an adapter maximum of eight items.
+Model output limits can reduce that bound. Leaf projections total at most 10,000 UTF-8 bytes or the smaller chunk limit.
+Oversized inputs retain complete-input chunking. Original payloads, per-item size checks, fences, and full evidence authorization remain unchanged.
+
+The deterministic 16-record fixture used identical parent batching in both comparisons.
+Additional leaf batching reduced model calls from 21 to 7. This is not a universal speed or cost reduction.
+Tests cover unpublished evidence, separate turns, oversized originals, cancellation, revocation, partial retirement, and peer-selection failures.
+
+Recognizable temporary provider failures now permit three additional attempts with one shared deadline.
+Backoff increases from one to four seconds and respects longer provider delays up to 30 seconds.
+Authorization, credential, disabled-model, and invalid-summary failures do not receive these provider retries.
+Exhausted retries remain failed. Startup can recover matching cached availability failures once per scope without clearing a background pause.
+
+The final deterministic check passed TypeScript checks and 111 tests with 12,057 assertions.
+The packed package passed public exports, a TypeScript consumer, documentation checks, and the unchanged paper hash.
+Its native runs passed 23 lifecycle groups and 25 settings and recovery groups.
+Both runs observed actual leaf and parent batches and recovered two injected HTTP 503 responses without manual retry.
+They used 114 and 73 loopback model requests respectively.
+
+Private native artifacts remain in:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-ZcNzMS
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-4QR1uF
+```
+
+The authorized real-model trial used `openai/gpt-5.5-fast` in two new sessions within a separate temporary Location.
+An existing native conversation accepted another input in 648 milliseconds while auxiliary summaries remained blocked.
+After preparation, the second session read the exact original tool result and passed the unchanged verifier.
+It checked the unknown retry value 99421, error identifier, failed outcome, 23 passed tests, proposal state, and actual source citations.
+Foreign conversational history remained absent. Six summary calls were observed, not a complete cost measurement.
+
+The real trial artifacts remain in `optchat-real-host-RzBzmT` under the same private temporary directory.
+This single trial is not a repeated semantic benchmark. The injected-outage tests use the loopback fixture, not a paid-provider outage.
+
+The native terminal test passed six checks without model calls in `optchat-tui-SoOqbZ`.
+The dependency audit passed for 428 installed package instances, with no bundled third-party source.

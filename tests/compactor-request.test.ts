@@ -37,6 +37,26 @@ test("deadline interrupts the retry delay without another model call", async () 
   expect(calls).toBe(1);
 });
 
+test("temporary provider failures retry with exponential delays and a shared deadline", async () => {
+  for (const message of ["Generate.UnavailableError: model is temporarily unavailable", "HTTP 503", "Bad gateway", "ECONNRESET"]) {
+    let calls = 0; const delays: number[] = [];
+    expect(await compactorRequest(async () => { if (++calls < 4) throw new Error(message); return "recovered"; }, 30000, async ms => { delays.push(ms); })).toBe("recovered");
+    expect(delays).toEqual([1000, 2000, 4000]); expect(calls).toBe(4);
+  }
+  let calls = 0;
+  await expect(compactorRequest(async () => { calls++; throw new Error("HTTP 503"); }, 30000, async () => {})).rejects.toThrow("503");
+  expect(calls).toBe(4);
+  for (const message of ["Generate.UnavailableError: HTTP 401 Unauthorized", "HTTP 403 Forbidden", "Invalid API key", "model does not exist", "Generate.UnavailableError: model is disabled", "Rate limit HTTP 401 Unauthorized"]) {
+    let calls = 0; await expect(compactorRequest(async () => { calls++; throw new Error(message); }, 30000, async () => {})).rejects.toThrow(message); expect(calls).toBe(1);
+  }
+});
+
+test("temporary provider retries stop during cancellation and never issue a later call", async () => {
+  const controller = new AbortController(); let calls = 0;
+  await expect(compactorRequest(async () => { calls++; throw new Error("Service unavailable"); }, 30000, async (_ms, signal) => { controller.abort(new Error("stop")); signal.throwIfAborted(); }, controller.signal)).rejects.toThrow("stop");
+  expect(calls).toBe(1);
+});
+
 test("database claim limit spans connections and permits fenced crash recovery", () => {
   const directory = mkdtempSync(join(tmpdir(), "optchat-claims-"));
   const first = new Store(join(directory, "memory.sqlite")), second = new Store(join(directory, "memory.sqlite"));

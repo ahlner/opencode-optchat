@@ -13,6 +13,8 @@ export declare class Store {
     claim(now?: number, leaseMs?: number, maxRunning?: number): Job | undefined;
     owns(job: Job): boolean;
     claimParentPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[];
+    claimLeafPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[];
+    private claimEvidencePeers;
     renew(job: Job, leaseMs: number, now?: number): boolean;
     recoverLease(job: Job, leaseMs: number, now?: number, maxRunning?: number): boolean;
     release(job: Job): boolean;

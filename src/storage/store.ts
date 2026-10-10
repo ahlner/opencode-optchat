@@ -79,12 +79,18 @@ export class Store {
     return row?.fence === job.fence && row.status === "running" && row.leaseUntil > Date.now();
   }
   claimParentPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[] {
-    if (anchor.input.type !== "parent") return [];
+    return this.claimEvidencePeers(anchor, limit, leaseMs, start, end, "parent");
+  }
+  claimLeafPeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number): Job[] {
+    return this.claimEvidencePeers(anchor, limit, leaseMs, start, end, "leaf");
+  }
+  private claimEvidencePeers(anchor: Job, limit: number, leaseMs: number, start: number, end: number, type: "parent" | "leaf"): Job[] {
+    if (anchor.input.type === "publication" || anchor.input.type !== type) return [];
     const tree = anchor.input.tree;
     return this.transaction(() => {
       const now = Date.now();
       if (!this.db.query("SELECT 1 FROM jobs WHERE id=? AND fence=? AND status='running' AND ownerToken=? AND leaseUntil>?").get(anchor.id, anchor.fence, this.owner, now)) return [];
-      const rows = this.db.query("SELECT * FROM jobs WHERE status='pending' AND json_extract(input,'$.type')='parent' AND json_extract(input,'$.tree')=? AND json_extract(input,'$.start')>=? AND json_extract(input,'$.start')+json_extract(input,'$.count')<=? ORDER BY rowid LIMIT ?").all(tree, start, end, Math.max(0, Math.min(15, limit))) as (Omit<Job, "input"> & { input: string })[];
+      const rows = this.db.query("SELECT * FROM jobs WHERE status='pending' AND json_extract(input,'$.type')=? AND json_extract(input,'$.tree')=? AND json_extract(input,'$.start')>=? AND json_extract(input,'$.start')+COALESCE(json_extract(input,'$.count'),1)<=? ORDER BY rowid LIMIT ?").all(type, tree, start, end, Math.max(0, Math.min(15, limit))) as (Omit<Job, "input"> & { input: string })[];
       return rows.map(row => {
         const fence = row.fence + 1;
         this.db.query("UPDATE jobs SET status='running',fence=?,leaseUntil=?,attempts=attempts+1,ownerPid=?,ownerToken=? WHERE id=?").run(fence, now + leaseMs, process.pid, this.owner, row.id);

@@ -47,9 +47,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const compactor = config.fakeSummarizer ? new FakeSummarizer() : new ModelSummarizer(async (prompt, signal) => {
     const models = await diagnostics.span("compactor.model.list", () => abortable(() => ctx.model.list({}), signal));
     const model = models.data.find(m => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
-    insist(model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "Compactor model limits are required");
+    insist(model?.enabled !== false && model?.limit.context && model.limit.output, "MODEL_LIMIT_UNKNOWN", "The compactor must be enabled and have known model limits");
     // Discover limits during actual background work, never while the Location is starting.
     engine.options.parentBatchSize = Math.max(1, Math.min(8, Math.floor(model.limit.output / 3200)));
+    engine.options.leafBatchSize = engine.options.parentBatchSize;
     insist(Buffer.byteLength(prompt, "utf8") + model.limit.output + safetyTokens <= model.limit.context, "SUMMARY_INPUT_TOO_LARGE", "Compactor prompt and reserves exceed its model budget");
     return diagnostics.span("compactor.request", () => compactorRequest(async signal => diagnostics.span("compactor.generate", async () => {
       const requestId = crypto.randomUUID(), jobId = activeJob, parentId = activeOperation;
@@ -73,6 +74,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   if (repairedNodes) diagnostics.emit("summary.repaired", { count: repairedNodes });
   const recoveredBatches = engine.recoverRejectedBatches(config.scopeId);
   if (recoveredBatches) diagnostics.emit("batch.recovered", { count: recoveredBatches });
+  const recoveredProviders = engine.recoverProviderFailures(config.scopeId);
+  if (recoveredProviders) diagnostics.emit("provider.recovered", { count: recoveredProviders });
   let tail: Promise<unknown> = Promise.resolve(), stopped = false, operationSignal: AbortSignal | undefined;
   let queued = 0, activeOperation: number | undefined, activePhase: string | undefined;
   let activeController: AbortController | undefined, primaryPriority = 0;

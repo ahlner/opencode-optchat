@@ -9,12 +9,17 @@ const root = await mkdtemp(join(process.env.TMPDIR ?? "/private/var/folders/jk/j
 for (const dir of ["config", "data", "cache", "state", "project", "project/plugin"]) await mkdir(join(root, dir));
 const requests: any[] = [];
 let holdSummaries = false;
+let unavailableResponses = 0, unavailableAttempts = 0;
 const heldSummaries = new Set<() => void>();
 const plain = (text: string) => ({ content: text });
 const call = (id: string, name: string, input: unknown) => ({ tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(input) } }] });
 const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   const body = await req.json() as any; requests.push(body);
   const messages = body.messages as any[], all = JSON.stringify(messages);
+  if (all.includes("UNTRUSTED_JSON_DATA") && unavailableResponses > 0) {
+    unavailableResponses--; unavailableAttempts++;
+    return Response.json({ error: { message: "Fixture model is temporarily unavailable", type: "server_error", code: "provider_unavailable" } }, { status: 503 });
+  }
   if (holdSummaries && all.includes("UNTRUSTED_JSON_DATA")) await new Promise<void>(resolve => heldSummaries.add(resolve));
   const tools = messages.filter(m => m.role === "tool");
   if (body.tools && messages.some(m => m.role === "user" && JSON.stringify(m.content).includes("FAIL_CURRENT"))) return Response.json({ error: { message: "Fixture rejects this attempt", type: "invalid_request_error", code: "fixture_failure" } }, { status: 400 });
@@ -164,9 +169,15 @@ try {
   assert(requests.slice(beforeC).some(r => r.messages.some((m: any) => m.role === "system" && JSON.stringify(m.content).includes("A_DECISION"))), "Shared memory survives service restart");
   assert(publications().filter(p => p.sessionId === a.id).length === 1, "Restart never republishes A");
   const batchSession = await create(), beforeBatch = requests.length;
+  unavailableResponses = 2;
   await api("POST", `/api/session/${batchSession.id}/prompt`, { text: "BATCH_PARENT_SEED: record four independent tool exchanges." });
   await until(() => publications().some(p => p.sessionId === batchSession.id), "batched native tool turn publication");
-  assert(requests.slice(beforeBatch).some(r => JSON.stringify(r.messages).includes("BATCH_CONTRACT")), "Actual host sends one structured request for several parent jobs");
+  assert(requests.slice(beforeBatch).some(r => JSON.stringify(r.messages).includes("BATCH_CONTRACT")), "Actual host sends structured evidence batches");
+  assert.equal(unavailableAttempts, 2, "Two actual provider HTTP 503 responses recover without manual retry");
+  const batchDiagnostics = (await Bun.file(dbPath + ".diagnostics.ndjson").text()).trim().split("\n").map(line => JSON.parse(line));
+  assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "leaf" && row.batchSize > 1), "Actual native worker batches original leaves");
+  assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "parent" && row.batchSize > 1), "Parent batching remains active");
+  assert(batchDiagnostics.filter(row => row.event === "compactor.backoff").length >= 2, "Native provider retries record bounded backoff");
   const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
   assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);
   for (let i = 0; i < 4; i++) assert(batchSources.some(r => r.kind === "tool_result" && r.payload.includes(`BATCH_ITEM_${i}`) && r.payload.includes("x".repeat(700))), "Every full result remains retained");

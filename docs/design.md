@@ -2,17 +2,21 @@
 
 See [project terms](writing-guide.md#project-terms) for technical definitions.
 
-## Bounded parent batches and repair
+## Bounded evidence batches and repair
 
 The adapter projects routine audit records before summarization. Original payloads and payload hashes remain unchanged.
 Errors, retry data, changed files, and substantive tool payloads remain in the projection.
 Tool-call projections identify the separate result record without claiming that a result is absent.
 
-Only ready parents inside one completed session turn can share a request.
+Only ready leaves or ready parents inside one completed session turn can share a request.
 Shared-tree parents and parents spanning different turns remain separate.
 Model output limits determine the batch size, up to eight jobs.
 Every batch output has a checked item ID, a finished-text check, and its own 512-byte limit.
 Malformed responses retry at most three times and never create partial batch nodes.
+
+Leaf batches contain at most 10,000 projected UTF-8 bytes, or the smaller configured chunk limit.
+Every original retains its independent source reference and complete payload.
+Oversized projections keep the complete-input chunking path. Batch selection releases unused peer claims.
 
 Peer claims share one serialized provider operation, but each claim keeps its own fence and lease renewal.
 Cancellation releases all matching claims. Retention or another worker can invalidate each result independently.
@@ -162,8 +166,12 @@ It never cuts output bytes to satisfy the limit.
 
 The adapter limits atomic claims to one unexpired running job per database.
 The standalone engine retains its default parallel worker support.
-Explicit rate limits permit three additional model attempts with increasing delays and one shared request deadline.
+Explicit rate limits and recognizable temporary provider failures permit three additional model attempts with increasing delays and one shared request deadline.
 The adapter respects provider delays up to 30 seconds. Longer delays leave the job failed.
+
+Permanent authorization, credential, and model-configuration errors do not receive availability retries.
+Cancellation stops retry waits and releases matching claims. Exhausted retries leave failed jobs for review.
+Startup can recover matching cached availability failures once per scope, without clearing a pause or changing originals.
 Existing failed jobs still require an operator retry.
 
 `MEMORY_NOT_READY` means a required complete prefix or suitable durable projection is missing.

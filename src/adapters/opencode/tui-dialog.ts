@@ -20,6 +20,7 @@ export function registerSettingsDialog(ctx: Context) {
         { title: "Show memory status", value: "status" },
          { title: "Retry failed compaction", value: "retry" },
          { title: `Capture compactor content: ${draft.captureContent ? "enabled" : "disabled"}`, value: "captureContent" },
+         { title: `Summary size tolerance: ${draft.summaryAcceptBytes ?? 640} bytes`, value: "summaryAcceptBytes" },
         { title: "Save settings", value: "save" },
       ] });
       if (!field) return;
@@ -45,10 +46,11 @@ export function registerSettingsDialog(ctx: Context) {
         draft = await rpc.write(draft, options) as Settings;
         ctx.ui.toast.show({ message: "OptChat settings saved", variant: "success" }); return;
       } else {
-        const text = await ctx.ui.dialog.prompt({ title: field, placeholder: String(draft[field as "memoryBytes" | "safetyTokens" | "waitMs"]) });
+        const text = await ctx.ui.dialog.prompt({ title: field, placeholder: String(field === "summaryAcceptBytes" ? draft.summaryAcceptBytes ?? 640 : draft[field as "memoryBytes" | "safetyTokens" | "waitMs"]) });
         if (text !== undefined) {
           const value = Number(text);
-          if (!text.trim() || !Number.isSafeInteger(value)) { await ctx.ui.dialog.alert({ title: "Invalid value", message: "Enter a whole number." }); continue; }
+           if (!text.trim() || !Number.isSafeInteger(value)) { await ctx.ui.dialog.alert({ title: "Invalid value", message: "Enter a whole number." }); continue; }
+           if (field === "summaryAcceptBytes" && value < 512) { await ctx.ui.dialog.alert({ title: "Invalid value", message: "Enter at least 512 bytes." }); continue; }
           draft = { ...draft, [field]: value };
         }
       }

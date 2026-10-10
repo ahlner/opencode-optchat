@@ -106,9 +106,20 @@ var sourceKey = (r) => key(r.sessionId, r.generation, r.seq);
 var turnKey = (t) => key(t.sessionId, t.generation, t.id);
 
 // src/compactor/summarizer.ts
-function summaryRejection(text, input) {
-  if (!text.trim() || bytes(text) > 512)
+var defaultSummaryAcceptBytes = 640;
+function validateSummaryAcceptBytes(value) {
+  insist(Number.isSafeInteger(value) && value >= 512, "CONFIG", "Summary size tolerance must be an integer of at least 512 bytes");
+}
+function summaryFits(text, input, accepted = defaultSummaryAcceptBytes) {
+  const size = bytes(text);
+  return !!text.trim() && size <= accepted && (size <= 512 || size < bytes(input));
+}
+function summaryRejection(text, input, accepted = defaultSummaryAcceptBytes) {
+  if (!summaryFits(text, input, accepted))
     return "SUMMARY_SIZE";
+  return summaryQualityRejection(text, input);
+}
+function summaryQualityRejection(text, input) {
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text))
     return "CONTROL_CHARACTERS";
   if (/^(?:Need (?:a )?summary|(?:I|We) (?:need|must|will) (?:to )?(?:summarize|write|produce)|Let's (?:summarize|write)|(?:Analysis|Thinking|Draft|Notes|Reasoning):|The summary should|Final concise\b)/i.test(text.trim()) || /\bDraft:[\s\S]*\b(?:bytes maybe|Final concise|Need <=)/i.test(text))
@@ -118,7 +129,7 @@ function summaryRejection(text, input) {
   if (/tool_call/.test(input) && /no (?:recorded )?(?:(?:contents?\/)?results?|outputs?)(?: text)? (?:recorded|shown|included)|missing results?\b|result (?:not shown|unknown)/i.test(text))
     return "TOOL_RESULT_ABSENCE";
 }
-var validSummary = (text, input) => summaryRejection(text, input) === undefined;
+var validSummary = (text, input, accepted = defaultSummaryAcceptBytes) => summaryRejection(text, input, accepted) === undefined;
 var retryInstruction = "For TOOL_RESULT_ABSENCE, state only the recorded tool name, arguments, or verified result. Omit all claims that results are absent, missing, unknown, or not recorded. A separate result record is not a failure. For other errors, return finished factual evidence within 512 UTF-8 bytes, without drafting notes.";
 
 class FakeSummarizer {
@@ -134,12 +145,15 @@ class ModelSummarizer {
   inputBytes;
   retries;
   lossless;
-  constructor(generate, model, inputBytes = 12000, retries = 5, lossless = false) {
+  summaryAcceptBytes;
+  constructor(generate, model, inputBytes = 12000, retries = 5, lossless = false, summaryAcceptBytes = defaultSummaryAcceptBytes) {
     this.generate = generate;
     this.model = model;
     this.inputBytes = inputBytes;
     this.retries = retries;
     this.lossless = lossless;
+    this.summaryAcceptBytes = summaryAcceptBytes;
+    validateSummaryAcceptBytes(summaryAcceptBytes);
     insist(Number.isSafeInteger(inputBytes) && inputBytes >= 2048 && retries > 0 && retries <= 10, "CONFIG", "Invalid compactor bounds");
   }
   async summarize(input, signal) {
@@ -153,9 +167,9 @@ class ModelSummarizer {
 ${measured}
 UNTRUSTED_JSON_DATA:
 ${JSON.stringify(input)}`, signal), signal)).trim();
-      if (validSummary(text, input))
+      if (validSummary(text, input, this.summaryAcceptBytes))
         return { text, model: this.model, promptVersion: "optchat-6", fallback: false };
-      rejection = summaryRejection(text, input);
+      rejection = summaryRejection(text, input, this.summaryAcceptBytes);
       measured = `Previous response was rejected: ${rejection} (${bytes(text)} UTF-8 bytes). ${retryInstruction} Aim for at most ${Math.max(100, 280 - (attempt + 1) * 80)} bytes.`;
       if (bytes(text) <= 2048)
         measured += `
@@ -202,7 +216,7 @@ ${JSON.stringify(group)}`, signal), signal);
         const seen = new Set;
         if (!rows.every((r) => r && typeof r === "object" && Object.keys(r).sort().join(",") === "id,text" && typeof r.text === "string" && group.some((g) => g.id === r.id) && !seen.has(r.id) && !!seen.add(r.id)))
           continue;
-        const rejected = rows.map((r) => ({ id: r.id, bytes: bytes(r.text.trim()), reason: summaryRejection(r.text.trim(), group.find((g) => g.id === r.id).data) })).filter((r) => r.reason);
+        const rejected = rows.map((r) => ({ id: r.id, bytes: bytes(r.text.trim()), reason: summaryRejection(r.text.trim(), group.find((g) => g.id === r.id).data, this.summaryAcceptBytes) })).filter((r) => r.reason);
         if (rejected.length) {
           feedback = `Previous response was rejected for these items: ${JSON.stringify(rejected)}. ${retryInstruction} Return every expected ID, including corrected items.`;
           if (bytes(raw) <= 2048)
@@ -217,7 +231,7 @@ ${JSON.stringify(raw)}`;
         accepted = true;
         break;
       }
-      insist(accepted, "SUMMARY_BATCH_INVALID", "Batch summary IDs, evidence format, or 512-byte limits were invalid");
+      insist(accepted, "SUMMARY_BATCH_INVALID", "Batch summary IDs, evidence format, or size limits were invalid");
     }
     return results;
   }
@@ -335,16 +349,20 @@ var jobFailureCode = (error) => {
     return "SUMMARY_BATCH_INVALID";
   return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : temporaryProviderError(error) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
-var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, leafBatchSize: 1, compactEvidence: false };
+var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, leafBatchSize: 1, compactEvidence: false, summaryAcceptBytes: defaultSummaryAcceptBytes };
 
 class Engine {
   store;
   summarizer;
   options;
+  get summaryAcceptBytes() {
+    return this.options.summaryAcceptBytes;
+  }
   constructor(store, summarizer = new FakeSummarizer, options = {}) {
     this.store = store;
     this.summarizer = summarizer;
     this.options = { ...defaults, ...options };
+    validateSummaryAcceptBytes(this.summaryAcceptBytes);
     insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
     insist(Number.isSafeInteger(this.options.parentBatchSize) && this.options.parentBatchSize >= 1 && this.options.parentBatchSize <= 16, "CONFIG", "Parent batch size must be between 1 and 16");
     insist(Number.isSafeInteger(this.options.leafBatchSize) && this.options.leafBatchSize >= 1 && this.options.leafBatchSize <= 16, "CONFIG", "Leaf batch size must be between 1 and 16");
@@ -497,7 +515,7 @@ class Engine {
     }
   }
   writeNode(node) {
-    insist(node.bytes === bytes(node.text) && node.bytes <= 512 && !!node.text, "INVALID_SUMMARY", "Summary must be nonempty and at most 512 UTF-8 bytes");
+    insist(node.bytes === bytes(node.text) && !!node.text.trim(), "INVALID_SUMMARY", "Summary must be nonempty with an exact byte count");
     if (node.tree.startsWith('["session"') && node.children.length) {
       const children = node.children.map((id) => this.node(id));
       node.evidenceStart = Math.min(node.evidenceStart ?? node.start, ...children.map((n) => n.evidenceStart ?? n.start));
@@ -541,6 +559,7 @@ class Engine {
         signal?.throwIfAborted();
         const result = await abortable(() => this.summarizer.summarize(parts[i], signal), signal);
         fallback ||= result.fallback;
+        insist(summaryFits(result.text, parts[i], this.summaryAcceptBytes), "SUMMARY_SIZE", "Summary exceeds its tolerance or does not reduce its input");
         const n = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => {
           insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job");
@@ -555,6 +574,7 @@ class Engine {
       depth++;
     }
     const result = await abortable(() => this.summarizer.summarize(text, signal), signal);
+    insist(summaryFits(result.text, text, this.summaryAcceptBytes), "SUMMARY_SIZE", "Summary exceeds its tolerance or does not reduce its input");
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
   async workEvidenceBatch(jobs, signal) {
@@ -587,7 +607,7 @@ class Engine {
       const evidenceEnd = Math.max(...evidenceNodes.map((node) => node.evidenceEnd ?? node.start + node.count));
       const results = await abortable(() => this.summarizer.summarizeBatch(inputs, signal, jobs.map((job) => job.id)), signal);
       signal?.throwIfAborted();
-      insist(results.length === jobs.length && results.every((r) => r?.text?.trim() && bytes(r.text) <= 512), "SUMMARY_BATCH_INVALID", "Every evidence item requires a bounded summary");
+      insist(results.length === jobs.length && results.every((r, i) => r?.text && summaryFits(r.text, inputs[i], this.summaryAcceptBytes)), "SUMMARY_BATCH_INVALID", "Every evidence item requires a bounded summary");
       const committed = [];
       this.store.transaction(() => {
         for (const [index, job] of jobs.entries()) {
@@ -879,9 +899,9 @@ class Engine {
           return true;
         if (["lossless-local", "deterministic-fixture"].includes(n.model))
           return false;
-        if (!validSummary(n.text, ""))
+        if (!n.text.trim() || summaryQualityRejection(n.text, ""))
           return true;
-        if (!n.tree.startsWith('["session"') || validSummary(n.text, "tool_call"))
+        if (!n.tree.startsWith('["session"') || !summaryQualityRejection(n.text, "tool_call"))
           return false;
         const [, sessionId, generation] = JSON.parse(n.tree);
         return !!this.store.db.query("SELECT 1 FROM sources WHERE session=? AND generation=? AND seq>=? AND seq<? AND json_extract(value,'$.kind')='tool_call' LIMIT 1").get(sessionId, generation, n.evidenceStart ?? n.start, n.evidenceEnd ?? n.start + n.count);
@@ -1410,6 +1430,7 @@ var schema = {
   type: "object",
   additionalProperties: false,
   properties: {
+    summaryAcceptBytes: { type: "integer", minimum: 512, maximum: Number.MAX_SAFE_INTEGER },
     enabled: { type: "boolean" },
     captureContent: { type: "boolean" },
     database: { type: "string", minLength: 1 },
@@ -1581,7 +1602,8 @@ async function setupSettings(ctx, start) {
     memoryBytes: 16000,
     safetyTokens: 2048,
     waitMs: 30000,
-    captureContent: false
+    captureContent: false,
+    summaryAcceptBytes: defaultSummaryAcceptBytes
   };
   let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } : { ...defaults, ...await ctx.storage.get("settings.v1") };
   let cleanup, registrations = [];
@@ -1648,6 +1670,7 @@ async function setupSettings(ctx, start) {
     }
   };
   const validate = async (value) => {
+    validateSummaryAcceptBytes(value.summaryAcceptBytes ?? defaultSummaryAcceptBytes);
     insist(value.captureContent === undefined || typeof value.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
     insist(isAbsolute(value.database) && value.scopeId.trim(), "CONFIG", "Use an absolute database path and a nonempty scope");
     insist(Number.isSafeInteger(value.memoryBytes) && value.memoryBytes >= 0 && Number.isSafeInteger(value.safetyTokens) && value.safetyTokens >= 256, "CONFIG", "Use valid memory and safety budgets");
@@ -1661,7 +1684,7 @@ async function setupSettings(ctx, start) {
     }
   };
   await activate(settings);
-  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
+  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent", "summaryAcceptBytes"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
   let rpc;
   try {
     rpc = await ctx.rpc.register(SettingsRpc, {
@@ -1675,7 +1698,7 @@ async function setupSettings(ctx, start) {
       write: async (input) => serial(async () => {
         insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
         insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");
-        const next = input;
+        const next = { summaryAcceptBytes: defaultSummaryAcceptBytes, ...input };
         await validate(next);
         insist(next.database === settings.database && next.scopeId === settings.scopeId, "SCOPE_LOCKED", "The project database and scope cannot change in this dialog");
         insist(!activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
@@ -1986,6 +2009,8 @@ function createRecoveryLoop(options) {
 var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
   const config = ctx.options;
+  const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
+  validateSummaryAcceptBytes(summaryAcceptBytes);
   insist(config.database && isAbsolute2(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
@@ -2051,8 +2076,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     } finally {
       store.remove("compactorRetry", retryId);
     }
-  }, key(config.compactorModel), 12000, 5, true);
-  const engine = new Engine(store, compactor, { maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
+  }, key(config.compactorModel), 12000, 5, true, summaryAcceptBytes);
+  const engine = new Engine(store, compactor, { summaryAcceptBytes, maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
     if (event === "job.claim" || event === "job.batch")
       activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });
@@ -2685,4 +2710,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=F2C3EF85598060C164756E2164756E21
+//# debugId=B912D5FC4AA897CA64756E2164756E21

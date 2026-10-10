@@ -160,7 +160,7 @@ test("real-compactor rejection preserves originals and failed jobs instead of re
     const database = join(root, "memory.sqlite");
     const cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root }, options: { database, scopeId: "failure-scope", compactorModel: { id: "fixture", providerID: "fixture" } },
       session: { hook: async () => {}, get: async () => ({ projectID: "stable", location: { directory: root }, agent: "build", permissions: [] }), context: async () => [{ id: "original", type: "user", time: { created: 1 }, text: "RETRYABLE_ORIGINAL".repeat(40) }, { id: "idle", type: "idle", time: { created: 2 }, outcome: "succeeded" }] },
-      agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) }, generate: { text: async () => ({ text: "x".repeat(513) }) }, tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () { yield { type: "session.execution.succeeded", location: { directory: root }, data: { sessionID: "original-session" } }; } },
+      agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) }, generate: { text: async () => ({ text: "x".repeat(641) }) }, tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () { yield { type: "session.execution.succeeded", location: { directory: root }, data: { sessionID: "original-session" } }; } },
     } as any);
     await cleanup?.(); const store = new Store(database);
     try {

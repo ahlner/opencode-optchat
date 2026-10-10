@@ -11,7 +11,7 @@ Tool-call projections identify the separate result record without claiming that 
 Only ready leaves or ready parents inside one completed session turn can share a request.
 Shared-tree parents and parents spanning different turns remain separate.
 Model output limits determine the batch size, up to eight jobs.
-Every batch output has a checked item ID, a finished-text check, and its own 512-byte limit.
+Every batch output has a checked item ID, a finished-text check, and its own configured size limit.
 Malformed responses permit at most five model attempts and never create partial batch nodes.
 
 Leaf batches contain at most 10,000 projected UTF-8 bytes, or the smaller configured chunk limit.
@@ -91,7 +91,8 @@ Durable progress permits further bounded attempts. There is no total cost bound 
 
 Each session leaf covers one sealed original record.
 A parent covers two aligned adjacent children of equal size.
-Each summary contains at most 512 UTF-8 bytes.
+Summaries target 512 UTF-8 bytes. The acceptance tolerance defaults to 640 bytes.
+Responses above 512 bytes must reduce their individual input and fit the configured tolerance.
 Hashes, model identifiers, prompt versions, and child or source references remain outside generated text.
 
 The worker divides complete large inputs into bounded chunks without splitting Unicode code points.
@@ -169,7 +170,11 @@ The decoder reports the final rejection code when single-summary correction fail
 
 The comparison implementation [pi-optchat](https://github.com/jonaslsaa/pi-optchat/blob/main/src/compactor.ts) also uses five attempts.
 Its reviewed implementation permits a configurable 640-byte acceptance threshold and returns its shortest response after exhaustion.
-This engine retains its mandatory 512-byte limit and rejects oversized responses after exhaustion.
+This engine uses the same default tolerance, but rejects responses outside its acceptance limits after exhaustion.
+Short lossless inputs remain valid at or below 512 bytes without a size reduction.
+
+The engine checks generated sizes independently, including custom summarizers and every batch item.
+Existing immutable nodes retain their original acceptance limits during repair, migration, and settings changes.
 More correction attempts cannot guarantee valid or faithful model output.
 It never cuts output bytes to satisfy the limit.
 

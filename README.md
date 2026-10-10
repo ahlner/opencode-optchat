@@ -65,7 +65,9 @@ Failed jobs still require the existing recovery procedure.
 
 Invalid summaries permit five correction attempts within the background deadline.
 Each correction includes measured lengths and, when bounded, the previous response as untrusted data.
-The 512-byte limit remains mandatory. Invalid responses never become clipped summaries.
+Prompts target 512 UTF-8 bytes. The default acceptance tolerance is 640 bytes.
+Responses above 512 bytes must reduce their individual summary input and fit the configured tolerance.
+Invalid responses never become clipped summaries.
 
 The terminal status bar shows OptChat on the home screen and in sessions.
 It reads the current Location's server status every five seconds while visible.
@@ -124,7 +126,7 @@ The requests and delays share one `waitMs` deadline.
 Invalid credentials, denied access, disabled or unknown models, and invalid summary responses do not receive these provider retries.
 Exhausted retries still leave failed jobs for operator review. There is no infinite availability retry loop.
 
-Summaries must still fit 512 UTF-8 bytes.
+Summaries must fit the configured acceptance tolerance.
 These limits reduce request bursts. They do not guarantee a completion time for large archives.
 
 ### Compactor efficiency and output checks
@@ -138,7 +140,7 @@ Ready leaf jobs or ready parent jobs from the same completed turn can share a st
 The batch limit is eight jobs, reduced when the configured model has a smaller output limit.
 The adapter discovers that limit during background work, not during startup.
 It never batches different turns or shared publication ranges together.
-Each response must contain every expected item ID exactly once and respect each item's 512-byte limit.
+Each response must contain every expected item ID exactly once and respect each item's acceptance limits.
 
 Leaf batches limit their combined projected input to 10,000 UTF-8 bytes, or a smaller configured chunk limit.
 Oversized originals still use the existing complete-input chunking path. The adapter never cuts an original to fit a batch.
@@ -317,7 +319,7 @@ It does not impose a total archive cost limit or combine multiple oversized reco
 
 - SQLite transactions, write-ahead logging (WAL), durable jobs, leases, and fencing.
 - Complete structured original records, stable event keys, and a core staging interface for streaming data.
-- Binary session trees and publication trees. Each summary contains at most 512 UTF-8 bytes.
+- Binary session trees and publication trees. Summaries target 512 UTF-8 bytes with a configurable acceptance tolerance.
 - Exact turn coverage, stored frontiers, high/low thresholds, and temporary budget projections.
 - Turn snapshots, scope isolation, and authorized search, zoom, and source pages.
 - Automatic memory injection through the OpenCode `context` hook.
@@ -391,6 +393,14 @@ Set `OPTCHAT_GIT_PACKAGE` to test another Git revision.
 The test uses a loopback model and does not change user configuration.
 
 ## Configuration
+
+`summaryAcceptBytes` sets the summary size tolerance in UTF-8 bytes. It defaults to 640 and accepts integers of at least 512.
+The settings dialog exposes this option as **Summary size tolerance**.
+
+Responses above 512 bytes must be smaller than their individual summary input.
+The comparison uses the complete input or projected evidence, before prompt wrapping and batch serialization.
+The limit applies to new summaries, including chunks, batch items, parents, and publications.
+Existing immutable summaries retain their original acceptance limits when this setting changes.
 
 Use an existing configured model with known context and output limits.
 Use `fakeSummarizer: true` only for local tests.

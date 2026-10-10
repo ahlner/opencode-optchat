@@ -8,8 +8,12 @@ export interface Summarizer {
     summarize(input: string, signal?: AbortSignal): Promise<Summary>;
     summarizeBatch?(inputs: string[], signal?: AbortSignal, jobIds?: string[]): Promise<Summary[]>;
 }
-export declare function summaryRejection(text: string, input: string): string | undefined;
-export declare const validSummary: (text: string, input: string) => boolean;
+export declare const defaultSummaryAcceptBytes = 640;
+export declare function validateSummaryAcceptBytes(value: number): void;
+export declare function summaryFits(text: string, input: string, accepted?: number): boolean;
+export declare function summaryRejection(text: string, input: string, accepted?: number): string | undefined;
+export declare function summaryQualityRejection(text: string, input: string): string | undefined;
+export declare const validSummary: (text: string, input: string, accepted?: number) => boolean;
 export declare class FakeSummarizer implements Summarizer {
     summarize(input: string): Promise<Summary>;
 }
@@ -20,7 +24,8 @@ export declare class ModelSummarizer implements Summarizer {
     readonly inputBytes: number;
     readonly retries: number;
     readonly lossless: boolean;
-    constructor(generate: (prompt: string, signal?: AbortSignal) => Promise<string>, model: string, inputBytes?: number, retries?: number, lossless?: boolean);
+    readonly summaryAcceptBytes: number;
+    constructor(generate: (prompt: string, signal?: AbortSignal) => Promise<string>, model: string, inputBytes?: number, retries?: number, lossless?: boolean, summaryAcceptBytes?: number);
     summarize(input: string, signal?: AbortSignal): Promise<Summary>;
     summarizeBatch(inputs: string[], signal?: AbortSignal, jobIds?: string[]): Promise<Summary[]>;
 }

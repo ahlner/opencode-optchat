@@ -150,7 +150,7 @@ Read `docs/verification.md` for the real-model results and failed development at
 2. Never store hidden reasoning or private provider state.
 3. Seal records once with a stable event key and revision.
 4. Reject a changed payload that reuses an existing event key.
-5. Keep every summary at or below **512 UTF-8 bytes**.
+5. Target 512 UTF-8 bytes per summary. Accept up to the configured tolerance, defaulting to 640 bytes, only when the summary reduces the replaced content.
 6. Reject oversized summaries. Never cut their bytes to make them fit.
 7. Keep summaries immutable. Keep source and child references outside generated text.
 8. Cover each committed prefix without gaps or overlaps.

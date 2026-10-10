@@ -18,6 +18,7 @@ export interface EngineOptions {
     parentBatchSize: number;
     leafBatchSize: number;
     compactEvidence: boolean;
+    summaryAcceptBytes: number;
     jobEvent?: (event: string, details: {
         jobId: string;
         kind: string;
@@ -35,6 +36,7 @@ export declare class Engine {
     readonly store: Store;
     readonly summarizer: Summarizer;
     readonly options: EngineOptions;
+    get summaryAcceptBytes(): number;
     constructor(store: Store, summarizer?: Summarizer, options?: Partial<EngineOptions>);
     scope(id: string): Scope;
     register(id: string, scopeId: string, projectId: string, parentId?: string): Session;

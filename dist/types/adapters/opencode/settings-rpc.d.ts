@@ -10,6 +10,7 @@ export interface Settings {
     safetyTokens: number;
     waitMs: number;
     captureContent?: boolean;
+    summaryAcceptBytes?: number;
 }
 export declare const SettingsRpc: {
     readonly id: "optchat.settings";
@@ -23,6 +24,11 @@ export declare const SettingsRpc: {
                 readonly type: "object";
                 readonly additionalProperties: false;
                 readonly properties: {
+                    readonly summaryAcceptBytes: {
+                        readonly type: "integer";
+                        readonly minimum: 512;
+                        readonly maximum: number;
+                    };
                     readonly enabled: {
                         readonly type: "boolean";
                     };
@@ -74,6 +80,11 @@ export declare const SettingsRpc: {
                 readonly type: "object";
                 readonly additionalProperties: false;
                 readonly properties: {
+                    readonly summaryAcceptBytes: {
+                        readonly type: "integer";
+                        readonly minimum: 512;
+                        readonly maximum: number;
+                    };
                     readonly enabled: {
                         readonly type: "boolean";
                     };
@@ -123,6 +134,11 @@ export declare const SettingsRpc: {
                 readonly type: "object";
                 readonly additionalProperties: false;
                 readonly properties: {
+                    readonly summaryAcceptBytes: {
+                        readonly type: "integer";
+                        readonly minimum: 512;
+                        readonly maximum: number;
+                    };
                     readonly enabled: {
                         readonly type: "boolean";
                     };

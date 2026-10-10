@@ -1,7 +1,7 @@
 import { Store } from "../storage/store.ts";
 import { abortable } from "./abort.ts";
 import { temporaryProviderError } from "./provider-error.ts";
-import { chunks, FakeSummarizer, validSummary, type Summarizer } from "../compactor/summarizer.ts";
+import { chunks, FakeSummarizer, summaryFits, summaryQualityRejection, defaultSummaryAcceptBytes, validateSummaryAcceptBytes, type Summarizer } from "../compactor/summarizer.ts";
 import { MemoryError, bytes, hash, insist, key, sessionTree, sharedTree, sourceKey, turnKey, type Job, type Node, type Outcome, type Publication, type Session, type Snapshot, type SourceInput, type SourceRecord, type Turn, type View } from "./types.ts";
 import { rangeCover, validateCover } from "./tree.ts";
 import { mergeView, project } from "./views.ts";
@@ -26,12 +26,14 @@ const jobFailureCode = (error: unknown) => {
   if (/SUMMARY_BATCH_INVALID/.test(text)) return "SUMMARY_BATCH_INVALID";
   return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : temporaryProviderError(error) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
-export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; parentBatchSize: number; leafBatchSize: number; compactEvidence: boolean; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string; sourceId?: string; tree?: string; start?: number; count?: number; batchSize?: number }) => void }
-const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, leafBatchSize: 1, compactEvidence: false };
+export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; parentBatchSize: number; leafBatchSize: number; compactEvidence: boolean; summaryAcceptBytes: number; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string; sourceId?: string; tree?: string; start?: number; count?: number; batchSize?: number }) => void }
+const defaults: EngineOptions = { high: 16000, low: 12000, chunkBytes: 10000, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, leafBatchSize: 1, compactEvidence: false, summaryAcceptBytes: defaultSummaryAcceptBytes };
 export class Engine {
   readonly options: EngineOptions;
+  get summaryAcceptBytes() { return this.options.summaryAcceptBytes; }
   constructor(readonly store: Store, readonly summarizer: Summarizer = new FakeSummarizer(), options: Partial<EngineOptions> = {}) {
     this.options = { ...defaults, ...options };
+    validateSummaryAcceptBytes(this.summaryAcceptBytes);
     insist(Number.isSafeInteger(this.options.maxRunningJobs) && this.options.maxRunningJobs > 0, "CONFIG", "Job concurrency must be a positive integer");
     insist(Number.isSafeInteger(this.options.parentBatchSize) && this.options.parentBatchSize >= 1 && this.options.parentBatchSize <= 16, "CONFIG", "Parent batch size must be between 1 and 16");
     insist(Number.isSafeInteger(this.options.leafBatchSize) && this.options.leafBatchSize >= 1 && this.options.leafBatchSize <= 16, "CONFIG", "Leaf batch size must be between 1 and 16");
@@ -154,7 +156,8 @@ export class Engine {
     }
   }
   private writeNode(node: Node) {
-    insist(node.bytes === bytes(node.text) && node.bytes <= 512 && !!node.text, "INVALID_SUMMARY", "Summary must be nonempty and at most 512 UTF-8 bytes");
+    // Generation checks size before storage. Existing immutable nodes retain their original acceptance limits.
+    insist(node.bytes === bytes(node.text) && !!node.text.trim(), "INVALID_SUMMARY", "Summary must be nonempty with an exact byte count");
     if (node.tree.startsWith('["session"') && node.children.length) {
       const children = node.children.map(id => this.node(id));
       node.evidenceStart = Math.min(node.evidenceStart ?? node.start, ...children.map(n => n.evidenceStart ?? n.start));
@@ -186,6 +189,7 @@ export class Engine {
         if (existing) { summaries.push(existing.text); ids.push(existing.id); fallback ||= existing.fallback; continue; }
         signal?.throwIfAborted();
         const result = await abortable(() => this.summarizer.summarize(parts[i]!, signal), signal); fallback ||= result.fallback;
+        insist(summaryFits(result.text, parts[i]!, this.summaryAcceptBytes), "SUMMARY_SIZE", "Summary exceeds its tolerance or does not reduce its input");
         const n: Node = { id: hash(key(tree, hash(parts[i]), result)), tree, start: 0, count: 1, children: [], inputs: [hash(parts[i])], ...result, bytes: bytes(result.text) };
         this.store.transaction(() => { insist(this.store.recoverLease(job, this.options.leaseMs, Date.now(), this.options.maxRunningJobs), "LEASE_LOST", "Another worker or retention change replaced this job"); this.writeNode(n); });
         summaries.push(n.text); ids.push(n.id);
@@ -193,6 +197,7 @@ export class Engine {
       text = summaries.join("\n"); inputs = ids; depth++;
     }
     const result = await abortable(() => this.summarizer.summarize(text, signal), signal);
+    insist(summaryFits(result.text, text, this.summaryAcceptBytes), "SUMMARY_SIZE", "Summary exceeds its tolerance or does not reduce its input");
     return { ...result, fallback: fallback || result.fallback, inputs };
   }
   private async workEvidenceBatch(jobs: Job[], signal?: AbortSignal): Promise<boolean> {
@@ -208,7 +213,7 @@ export class Engine {
       const evidenceEnd = Math.max(...evidenceNodes.map(node => node.evidenceEnd ?? node.start + node.count));
       const results = await abortable(() => this.summarizer.summarizeBatch!(inputs, signal, jobs.map(job => job.id)), signal);
       signal?.throwIfAborted();
-      insist(results.length === jobs.length && results.every(r => r?.text?.trim() && bytes(r.text) <= 512), "SUMMARY_BATCH_INVALID", "Every evidence item requires a bounded summary");
+      insist(results.length === jobs.length && results.every((r, i) => r?.text && summaryFits(r.text, inputs[i]!, this.summaryAcceptBytes)), "SUMMARY_BATCH_INVALID", "Every evidence item requires a bounded summary");
       const committed: Job[] = [];
       this.store.transaction(() => {
         for (const [index, job] of jobs.entries()) {
@@ -412,8 +417,8 @@ export class Engine {
         if (!belongs(n)) return false;
         if (n.children.some(id => !retainedIds.has(id))) return true;
         if (["lossless-local", "deterministic-fixture"].includes(n.model)) return false;
-        if (!validSummary(n.text, "")) return true;
-        if (!n.tree.startsWith('["session"') || validSummary(n.text, "tool_call")) return false;
+        if (!n.text.trim() || summaryQualityRejection(n.text, "")) return true;
+        if (!n.tree.startsWith('["session"') || !summaryQualityRejection(n.text, "tool_call")) return false;
         const [, sessionId, generation] = JSON.parse(n.tree);
         return !!this.store.db.query("SELECT 1 FROM sources WHERE session=? AND generation=? AND seq>=? AND seq<? AND json_extract(value,'$.kind')='tool_call' LIMIT 1").get(sessionId, generation, n.evidenceStart ?? n.start, n.evidenceEnd ?? n.start + n.count);
       }).map(n => n.id));

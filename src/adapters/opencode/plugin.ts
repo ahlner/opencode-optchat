@@ -11,13 +11,16 @@ import { abortable } from "../../core/abort.ts";
 import { Diagnostics, diagnosticCode } from "./diagnostics.ts";
 import { automaticScope, sameDirectory } from "./settings-scope.ts";
 import { createRecoveryLoop } from "./recovery-loop.ts";
+import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
-interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; memoryBytes: number; safetyTokens: number; waitMs: number }
+interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; summaryAcceptBytes?: number; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports the tested OpenCode version 2.0.26 only");
   const config = ctx.options as unknown as Config;
+  const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
+  validateSummaryAcceptBytes(summaryAcceptBytes);
   insist(config.database && isAbsolute(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
@@ -71,8 +74,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       if (retryJob && retryClaim) store.set("compactorRetry", retryId, { jobId: retryJob, fence: retryClaim.fence, attempt, retryAt: Date.now() + delayMs });
     }), { jobId: activeJob, parentId: activeOperation, inputBytes: Buffer.byteLength(prompt, "utf8") });
     } finally { store.remove("compactorRetry", retryId); }
-  }, key(config.compactorModel), 12000, 5, true);
-  const engine = new Engine(store, compactor, { maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
+  }, key(config.compactorModel), 12000, 5, true, summaryAcceptBytes);
+  const engine = new Engine(store, compactor, { summaryAcceptBytes, maxRunningJobs: 1, compactEvidence: true, jobEvent: (event, details) => {
     if (event === "job.claim" || event === "job.batch") activeJob = details.jobId;
     diagnostics.emit(event, { ...details, parentId: activeOperation });
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event)) activeJob = undefined;

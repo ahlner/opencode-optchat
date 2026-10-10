@@ -363,7 +363,7 @@ describe("crash, concurrency, retention and compactor failures", () => {
   test("invalid summaries fail before visibility", async () => {
     const e = make({ summarize: async () => ({ text: "🙂".repeat(129), model: "bad", promptVersion: "1", fallback: false }) });
     register(e, "a"); e.admit("a", "t"); e.append(input("a", "t", "e", "x")); e.finish("a", "t", "completed");
-    await expect(e.drain()).rejects.toThrow("INVALID_SUMMARY"); expect(pubs(e)).toHaveLength(0);
+    await expect(e.drain()).rejects.toThrow("SUMMARY_SIZE"); expect(pubs(e)).toHaveLength(0);
   });
   test("deletion revokes old snapshots, removes originals/search/derived nodes, retains others", async () => {
     const e = make(); register(e, "a"); register(e, "b"); register(e, "c"); register(e, "d", "different-scope");

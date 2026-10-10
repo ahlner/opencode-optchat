@@ -9,7 +9,7 @@ import { memoryStatus } from "../src/adapters/opencode/settings-status.ts";
 async function fixture() {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-settings-"));
   const database = join(root, "memory.sqlite");
-  const initial = { enabled: false, database, scopeId: "test-scope", memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false };
+  const initial = { enabled: false, database, scopeId: "test-scope", memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false, summaryAcceptBytes: 640 };
   let saved: any = initial, handlers: any, starts = 0, stops = 0, disposed = 0, failStorage = false;
   const context: any = { app: { version: "2.0.26" }, location: { project: { id: "test-project" } }, options: {},
     storage: { get: async () => saved, set: async (_key: string, value: any) => { if (failStorage) throw new Error("storage failure"); saved = value; } },
@@ -20,7 +20,7 @@ async function fixture() {
   };
   const start = async (ctx: any) => { starts++; await ctx.session.hook("context", () => {}); await ctx.tool.transform(() => {}); return () => { stops++; }; };
   const cleanup = await setupSettings(context, start);
-  return { root, database, initial, handlers, context, cleanup, start, enable: { ...initial, enabled: true, compactorModel: { providerID: "provider", id: "model" } },
+  return { root, database, initial, get handlers() { return handlers; }, context, cleanup, start, enable: { ...initial, enabled: true, compactorModel: { providerID: "provider", id: "model" } },
     counts: () => ({ starts, stops, disposed }), saved: () => saved, failStorage: () => { failStorage = true; } };
 }
 
@@ -29,6 +29,7 @@ test("TUI settings start inactive, validate models, activate, persist, and dispo
   try {
     expect(f.counts().starts).toBe(0); expect(await Bun.file(f.database).exists()).toBe(false);
     expect(await f.handlers.read({})).toEqual(f.initial);
+    for (const summaryAcceptBytes of [511, 640.5, Infinity]) await expect(f.handlers.write({ ...f.enable, summaryAcceptBytes })).rejects.toThrow("CONFIG");
     for (const next of [{ ...f.enable, compactorModel: undefined }, { ...f.enable, compactorModel: { providerID: "provider", id: "missing" } }, { ...f.enable, memoryBytes: -1 }, { ...f.enable, waitMs: 0 }, { ...f.enable, safetyTokens: 0 }, { ...f.enable, captureContent: "yes" }]) {
       await expect(f.handlers.write(next)).rejects.toThrow("CONFIG");
     }
@@ -53,6 +54,22 @@ test("settings reject active turns, retain memory on disable, and restore runtim
     f.failStorage(); await expect(f.handlers.write({ ...f.enable, memoryBytes: 8000 })).rejects.toThrow("storage failure");
     expect(await f.handlers.read({})).toEqual(f.enable); expect(f.counts().starts).toBe(3);
     const retained = new Store(f.database); expect(retained.all("turns")).toHaveLength(1); retained.close();
+  } finally { await f.cleanup?.(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("summary tolerance defaults for legacy settings and persists custom values", async () => {
+  const f = await fixture();
+  try {
+    delete (f.saved() as any).summaryAcceptBytes;
+    const restored = await setupSettings(f.context, f.start);
+    try {
+      expect((await f.handlers.read({})).summaryAcceptBytes).toBe(640);
+      expect((await f.handlers.write({ ...f.initial, summaryAcceptBytes: 768 })).summaryAcceptBytes).toBe(768);
+      expect(f.saved().summaryAcceptBytes).toBe(768);
+      const reloaded = await setupSettings(f.context, f.start);
+      try { expect((await f.handlers.read({})).summaryAcceptBytes).toBe(768); }
+      finally { await reloaded?.(); }
+    } finally { await restored?.(); }
   } finally { await f.cleanup?.(); await rm(f.root, { recursive: true, force: true }); }
 });
 

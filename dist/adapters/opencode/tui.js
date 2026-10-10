@@ -8,6 +8,7 @@ var schema = {
   type: "object",
   additionalProperties: false,
   properties: {
+    summaryAcceptBytes: { type: "integer", minimum: 512, maximum: Number.MAX_SAFE_INTEGER },
     enabled: { type: "boolean" },
     captureContent: { type: "boolean" },
     database: { type: "string", minLength: 1 },
@@ -156,6 +157,7 @@ function registerSettingsDialog(ctx) {
         { title: "Show memory status", value: "status" },
         { title: "Retry failed compaction", value: "retry" },
         { title: `Capture compactor content: ${draft.captureContent ? "enabled" : "disabled"}`, value: "captureContent" },
+        { title: `Summary size tolerance: ${draft.summaryAcceptBytes ?? 640} bytes`, value: "summaryAcceptBytes" },
         { title: "Save settings", value: "save" }
       ] });
       if (!field)
@@ -204,11 +206,15 @@ Counts cover this database. Status does not certify summary accuracy.` });
         ctx.ui.toast.show({ message: "OptChat settings saved", variant: "success" });
         return;
       } else {
-        const text = await ctx.ui.dialog.prompt({ title: field, placeholder: String(draft[field]) });
+        const text = await ctx.ui.dialog.prompt({ title: field, placeholder: String(field === "summaryAcceptBytes" ? draft.summaryAcceptBytes ?? 640 : draft[field]) });
         if (text !== undefined) {
           const value = Number(text);
           if (!text.trim() || !Number.isSafeInteger(value)) {
             await ctx.ui.dialog.alert({ title: "Invalid value", message: "Enter a whole number." });
+            continue;
+          }
+          if (field === "summaryAcceptBytes" && value < 512) {
+            await ctx.ui.dialog.alert({ title: "Invalid value", message: "Enter at least 512 bytes." });
             continue;
           }
           draft = { ...draft, [field]: value };
@@ -295,4 +301,4 @@ export {
   tui_default as default
 };
 
-//# debugId=FFD0D6B608123FE664756E2164756E21
+//# debugId=8261CA3CD4F4E20564756E2164756E21

@@ -82,6 +82,7 @@ Review those rules manually.
 | snapshot | The registered visibility boundaries that remain fixed during a turn. |
 | source | An original record or its authorized retrieval reference. |
 | suffix | The continuous part of a sequence from a specified boundary to its end. |
+| summary size tolerance | The configured maximum UTF-8 byte count for a new summary. |
 | terminal turn | A turn whose outcome is completed, failed, or interrupted. |
 | turn | An admitted request and all its tool continuations until a terminal outcome. |
 | view | An ordered frontier that covers a complete summarized prefix. |

@@ -5,6 +5,7 @@ import { Store, insist, type Turn } from "../../index.ts";
 import { SettingsRpc, type Settings } from "./settings-rpc.ts";
 import { memoryStatus, retryMemoryJobs } from "./settings-status.ts";
 import { automaticScope } from "./settings-scope.ts";
+import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
 export async function setupSettings(ctx: Context, start: (ctx: Context) => Promise<Cleanup | void> | Cleanup | void) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
@@ -14,7 +15,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
   const scopeId = automaticScope(ctx.location.project.id, ctx.location.project.canonical), identity = scopeId.slice("local:".length);
   const defaults: Settings = {
     enabled: false, database: join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "optchat", identity, "memory.sqlite"),
-    scopeId, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false,
+    scopeId, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false, summaryAcceptBytes: defaultSummaryAcceptBytes,
   };
   let settings = explicit ? { ...defaults, ...ctx.options, enabled: true } as Settings :
     { ...defaults, ...await ctx.storage.get("settings.v1") as Partial<Settings> };
@@ -58,6 +59,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
     catch (error) { await stop(); throw error; }
   };
   const validate = async (value: Settings) => {
+    validateSummaryAcceptBytes(value.summaryAcceptBytes ?? defaultSummaryAcceptBytes);
     insist(value.captureContent === undefined || typeof value.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
     insist(isAbsolute(value.database) && value.scopeId.trim(), "CONFIG", "Use an absolute database path and a nonempty scope");
     insist(Number.isSafeInteger(value.memoryBytes) && value.memoryBytes >= 0 && Number.isSafeInteger(value.safetyTokens) && value.safetyTokens >= 256,
@@ -73,7 +75,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
     }
   };
   await activate(settings);
-  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent"].filter(k => (settings as any)[k] !== undefined).map(k => [k, (settings as any)[k]]));
+  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent", "summaryAcceptBytes"].filter(k => (settings as any)[k] !== undefined).map(k => [k, (settings as any)[k]]));
   let rpc;
   try { rpc = await ctx.rpc.register(SettingsRpc, {
     read: async () => publicSettings(),
@@ -86,7 +88,7 @@ export async function setupSettings(ctx: Context, start: (ctx: Context) => Promi
     write: async input => serial(async () => {
       insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
       insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");
-      const next = input as Settings; await validate(next);
+       const next = { summaryAcceptBytes: defaultSummaryAcceptBytes, ...input as Settings }; await validate(next);
       insist(next.database === settings.database && next.scopeId === settings.scopeId, "SCOPE_LOCKED", "The project database and scope cannot change in this dialog");
       insist(!activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
       changing = true;

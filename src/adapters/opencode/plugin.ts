@@ -13,7 +13,7 @@ import { automaticScope, sameDirectory } from "./settings-scope.ts";
 import { createRecoveryLoop } from "./recovery-loop.ts";
 import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
-interface Config { database: string; scopeId: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; summaryAcceptBytes?: number; memoryBytes: number; safetyTokens: number; waitMs: number }
+interface Config { database: string; projectId?: string; compactorModel?: { providerID: string; id: string }; fakeSummarizer?: boolean; captureContent?: boolean; summaryAcceptBytes?: number; memoryBytes: number; safetyTokens: number; waitMs: number }
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
@@ -21,8 +21,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const config = ctx.options as unknown as Config;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);
-  insist(config.database && isAbsolute(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
+  insist(config.database && isAbsolute(config.database), "CONFIG", "Set an absolute database path");
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
+  // The trust scope comes from the host project. The TUI settings path injects it; direct setups derive it here.
+  const scopeId = automaticScope(ctx.location?.project?.id ?? "global", ctx.location?.project?.canonical);
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
   insist(Number.isSafeInteger(memoryBytes) && memoryBytes >= 0 && Number.isSafeInteger(safetyTokens) && safetyTokens >= 256, "CONFIG", "Invalid memory/safety budget");
@@ -30,13 +32,44 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   await mkdir(dirname(config.database), { recursive: true, mode: 0o700 });
   const store = new Store(config.database);
   // A host-bound worker must never send another scope's jobs to its configured provider.
-  try { store.transaction(() => {
+  // A legacy database bound to the "global" discovery scope can migrate to the derived
+  // project scope when its verified directory matches this Location.
+  const canonical = ctx.location?.project?.canonical;
+  const legacyMigration = store.transaction(() => {
     const bound = store.get<string>("settings", "adapterScope");
-    insist(!bound || bound === config.scopeId, "SCOPE_MISMATCH", "Use a separate adapter database for each trust scope");
-    insist(store.all<{ id: string }>("scopes").every(scope => scope.id === config.scopeId), "SCOPE_MISMATCH", "This database contains jobs from a different trust scope");
-    store.set("settings", "adapterScope", config.scopeId);
-  }); } catch (error) { store.close(); throw error; }
+    const scopes = store.all<{ id: string }>("scopes");
+    if ((!bound || bound === scopeId) && scopes.every(scope => scope.id === scopeId)) return false;
+    const legacy = automaticScope("global", canonical);
+    if (bound !== undefined && bound !== legacy) return false;
+    if (!scopes.length || !scopes.every(scope => scope.id === legacy)) return false;
+    if (legacy === scopeId) return false;
+    new Engine(store).rescope(bound ?? legacy, scopeId);
+    store.set("settings", "adapterScope", scopeId);
+    return true;
+  });
+  // A database that belongs to a different, non-migratable scope must not abort the host.
+  // Memory stays inactive for this Location and reconciliation records the disable reason.
+  let scopeBlocked = false;
+  store.transaction(() => {
+    const bound = store.get<string>("settings", "adapterScope");
+    if ((bound && bound !== scopeId) || !store.all<{ id: string }>("scopes").every(scope => scope.id === scopeId)) {
+      scopeBlocked = true;
+      store.set("adapterErrors", "SCOPE_MISMATCH", { code: "SCOPE_MISMATCH", timestamp: new Date().toISOString() });
+    }
+  });
   const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()) as Record<string, number>, 5000, 2 * 1024 * 1024, config.captureContent === true);
+  if (scopeBlocked) {
+    // Native mode stays available without memory tools or memory content.
+    await ctx.session?.hook?.("context", async event => {
+      event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => !["optchat_zoom", "optchat_source", "optchat_search"].includes(name)));
+      event.system = [...event.system, { type: "text", text: "OptChat memory is unavailable for this entire turn. Use the native conversation and current tools only. Do not claim cross-session memory access." }];
+      diagnostics.emit("primary.native", { sessionId: event.sessionID, errorCode: "SCOPE_MISMATCH" });
+    });
+    diagnostics.close();
+    store.close();
+    return () => Promise.resolve();
+  }
+  if (legacyMigration) diagnostics.emit("scope.rescoped", { from: "legacy-global", to: hash(scopeId) });
   diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   // Recover only the exact readiness error that older adapters incorrectly made permanent.
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
@@ -80,13 +113,13 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     diagnostics.emit(event, { ...details, parentId: activeOperation });
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event)) activeJob = undefined;
   } }), retrieval = new Retrieval(engine);
-  const repairedNodes = engine.repairInvalidSummaries(config.scopeId);
-  const repairedJobs = engine.repairDanglingJobs(config.scopeId);
+  const repairedNodes = engine.repairInvalidSummaries(scopeId);
+  const repairedJobs = engine.repairDanglingJobs(scopeId);
   if (repairedJobs) diagnostics.emit("dependencies.repaired", { count: repairedJobs });
   if (repairedNodes) diagnostics.emit("summary.repaired", { count: repairedNodes });
-  const recoveredBatches = engine.recoverRejectedBatches(config.scopeId);
+  const recoveredBatches = engine.recoverRejectedBatches(scopeId);
   if (recoveredBatches) diagnostics.emit("batch.recovered", { count: recoveredBatches });
-  const recoveredProviders = engine.recoverProviderFailures(config.scopeId);
+  const recoveredProviders = engine.recoverProviderFailures(scopeId);
   if (recoveredProviders) diagnostics.emit("provider.recovered", { count: recoveredProviders });
   let tail: Promise<unknown> = Promise.resolve(), stopped = false, operationSignal: AbortSignal | undefined;
   let queued = 0, activeOperation: number | undefined, activePhase: string | undefined;
@@ -124,7 +157,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       insist(activePhase === "primary.context" || !store.get<{ paused: boolean }>("settings", "backgroundRecovery")?.paused,
         "BACKGROUND_PAUSED", "Automatic preparation paused without progress. Confirm Retry failed compaction to resume. Originals remain retained.");
       // Polling and unrelated model calls cannot repair a failed retained dependency.
-      for (const session of store.all<Session>("sessions")) if (!session.disabled && session.scopeId === config.scopeId && engine.preparationStatus(session.id).failed) {
+      for (const session of store.all<Session>("sessions")) if (!session.disabled && session.scopeId === scopeId && engine.preparationStatus(session.id).failed) {
         throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
       }
       await diagnostics.span("compactor.drain", () => engine.drain(100000, operationSignal), { parentId: activeOperation });
@@ -168,24 +201,24 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     let existing = store.get<Session>("sessions", sessionID);
     const projectId = config.projectId ?? info.projectID;
     const legacyScopeDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed): MemoryError: SCOPE_MISMATCH: Session cannot silently change scope$/;
-    // Native discovery can replace global metadata without changing the configured trust scope.
+    // Native discovery can replace global metadata without changing the derived trust scope.
     const nativeDirectory = info.location?.directory, canonical = ctx.location?.project?.canonical;
-    const verifiedLegacyScope = nativeDirectory && (config.scopeId === automaticScope("global", nativeDirectory) ||
-      sameDirectory(nativeDirectory, canonical) && config.scopeId === automaticScope("global", canonical));
+    const legacyDirectoryMatch = nativeDirectory && (sameDirectory(nativeDirectory, canonical) ||
+      sameDirectory(nativeDirectory, ctx.location?.directory));
     if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined &&
-      existing.scopeId === config.scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) &&
-      ctx.location?.project?.id === projectId && verifiedLegacyScope &&
+      existing.scopeId === scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) &&
+      ctx.location?.project?.id === projectId && legacyDirectoryMatch &&
       (!existing.disabled || legacyScopeDisable.test(existing.disabled))) {
       store.transaction(() => {
         existing!.projectId = projectId; delete existing!.disabled; store.set("sessions", sessionID, existing);
         if (!(store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(sessionID, existing!.generation) as { n: number }).n) store.remove("adapter", sessionID);
       });
-      diagnostics.emit("scope.discovery_migrated", { sessionId: sessionID, actualProjectHash: hash(projectId), actualScopeHash: hash(config.scopeId) });
+      diagnostics.emit("scope.discovery_migrated", { sessionId: sessionID, actualProjectHash: hash(projectId), actualScopeHash: hash(scopeId) });
     }
-    if (existing && (existing.scopeId !== config.scopeId || existing.projectId !== projectId)) diagnostics.emit("scope.mismatch", {
-      sessionId: sessionID, expectedScopeHash: hash(existing.scopeId), actualScopeHash: hash(config.scopeId), expectedProjectHash: hash(existing.projectId), actualProjectHash: hash(projectId),
+    if (existing && (existing.scopeId !== scopeId || existing.projectId !== projectId)) diagnostics.emit("scope.mismatch", {
+      sessionId: sessionID, expectedScopeHash: hash(existing.scopeId), actualScopeHash: hash(scopeId), expectedProjectHash: hash(existing.projectId), actualProjectHash: hash(projectId),
     });
-    const s = engine.register(sessionID, config.scopeId, projectId, info.parentID);
+    const s = engine.register(sessionID, scopeId, projectId, info.parentID);
     const agentId = requestAgent ?? info.agent ?? store.get<Journal>("adapter", sessionID)?.agentId ?? "build";
     const deadline = Date.now() + waitMs;
     let agent: Awaited<ReturnType<PluginContext["agent"]["get"]>>;
@@ -197,7 +230,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         await operation(() => Bun.sleep(50));
       }
     }
-    const policy = memoryPolicy([...agent.data.permissions, ...(info.permissions ?? [])], config.scopeId);
+    const policy = memoryPolicy([...agent.data.permissions, ...(info.permissions ?? [])], scopeId);
     const previousPolicy = store.get<{ digest: string; read: boolean; share: boolean }>("policies", sessionID);
     let interruptActive = false;
     store.transaction(() => {
@@ -214,7 +247,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       for (const row of aliases) store.set("checkpointAliases", row.id, JSON.parse(row.value));
       if (policy.read && journal) { journal.activeId = undefined; store.set("adapter", sessionID, journal); }
       else store.remove("adapter", sessionID);
-      const scope = engine.scope(config.scopeId); scope.policy++; store.set("scopes", config.scopeId, scope);
+      const scope = engine.scope(scopeId); scope.policy++; store.set("scopes", scopeId, scope);
     }
     s.broadcast = !info.parentID && policy.share;
     if (!policy.read) s.disabled = "Memory read permission was revoked";

@@ -40,6 +40,7 @@ export declare class Engine {
     constructor(store: Store, summarizer?: Summarizer, options?: Partial<EngineOptions>);
     scope(id: string): Scope;
     register(id: string, scopeId: string, projectId: string, parentId?: string): Session;
+    rescope(oldScopeId: string, newScopeId: string): void;
     session(id: string): Session;
     sources(sessionId: string, generation: number): SourceRecord[];
     private sourceCount;

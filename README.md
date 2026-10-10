@@ -265,13 +265,13 @@ The deadline does not guarantee that the archive will fit the memory budget on t
 
 ### Explicit configuration
 
-Use explicit options when you need a custom database path or trust scope.
+Use explicit options when you need a custom database path.
 Explicit options take precedence. The TUI does not overwrite them.
 
 1. Use OpenCode 2.0.26.
 2. Add the following entry to your project `opencode.jsonc`.
 3. Preserve existing configuration entries.
-4. Replace the database path, scope identifier, and model identifiers.
+4. Replace the database path and model identifiers.
 5. Open the project in OpenCode.
 6. Wait for the memory tools before you send the first prompt.
 
@@ -283,7 +283,6 @@ Explicit options take precedence. The TUI does not overwrite them.
       "package": "github:ahlner/opencode-optchat#main",
       "options": {
         "database": "/ABSOLUTE/PATH/private-directory/memory.sqlite",
-        "scopeId": "USER-ID:STABLE-PROJECT-ID",
         "compactorModel": { "providerID": "YOUR-PROVIDER", "id": "YOUR-MODEL" },
         "memoryBytes": 16000,
         "safetyTokens": 2048,
@@ -407,19 +406,29 @@ Use `fakeSummarizer: true` only for local tests.
 The fixture replaces large inputs with an explicit hash reference.
 It does not produce semantic summaries.
 
-`scopeId` defines a trust boundary.
-Use the same identifier only for sessions that may share their content.
-Do not use branch names or worktree paths as scope identifiers.
+The trust scope is derived from the host project.
+It combines the user's home directory, OpenCode's `projectID`, and the canonical project directory.
+Sessions of one project share their memory.
+Sessions of different projects keep separate scopes and separate databases.
 The optional `projectId` sets an explicit stable project identifier.
 Without this option, the adapter uses OpenCode's `projectID`.
 
 Use one adapter database for each scope.
 The adapter binds the database to its first scope identifier.
 This prevents another scope's worker from sending its jobs to a different configured provider.
+When a copied or moved project opens with a different derived scope, the adapter proposes a rescope.
+Rescope keeps the original records and rebuilds shared memory after your confirmation.
+
+A copy gets a new project identifier and a new empty database.
+Use the TUI adoption command to continue an earlier project memory.
+The dialog lists recently active project databases.
+You select one database and confirm the adoption.
+Adoption copies the selected memory into the current project database and rebinds its scope.
+The source project keeps its own memory.
 
 ### Memory permissions
 
-The configured scope supplies the initial grant to share memory.
+The derived scope supplies the initial grant to share memory.
 The adapter then evaluates native agent rules, followed by session rules.
 The last matching rule determines access.
 Both `deny` and `ask` revoke the matching memory permission.
@@ -427,10 +436,13 @@ The following example allows reading and denies sharing:
 
 ```jsonc
 "permissions": [
-  { "action": "optchat.read", "resource": "USER-ID:STABLE-PROJECT-ID", "effect": "allow" },
-  { "action": "optchat.share", "resource": "USER-ID:STABLE-PROJECT-ID", "effect": "deny" }
+  { "action": "optchat.read", "resource": "DERIVED-SCOPE-ID", "effect": "allow" },
+  { "action": "optchat.share", "resource": "DERIVED-SCOPE-ID", "effect": "deny" }
 ]
 ```
+
+The resource is the derived scope identifier.
+Read it from the status dialog or the `scope` entry in the settings dialog.
 
 `optchat.share: deny` retains private originals and revokes the session's publications.
 `optchat.read: deny` also revokes private memory data and stops an active request.

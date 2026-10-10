@@ -385,6 +385,53 @@ class Engine {
       return session;
     });
   }
+  rescope(oldScopeId, newScopeId) {
+    insist(oldScopeId !== newScopeId, "SCOPE_MISMATCH", "Rescope needs a different scope");
+    const old = this.scope(oldScopeId);
+    this.store.transaction(() => {
+      const sessions = this.store.all("sessions").filter((s) => s.scopeId === oldScopeId);
+      if (!sessions.length)
+        insist(!this.store.get("scopes", oldScopeId), "SCOPE_MISMATCH", "Unknown scope");
+      const epoch = old.epoch + 1;
+      const oldTree = sharedTree(oldScopeId, old.epoch);
+      const retained0 = this.store.all("publications").filter((p) => p.scopeId === oldScopeId);
+      const oldNodes = retained0.map((p) => this.node(p.nodeId));
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(oldTree);
+      this.store.remove("views", oldTree);
+      for (const snap of this.store.all("snapshots"))
+        if (snap.scopeId === oldScopeId)
+          this.store.remove("snapshots", snap.id);
+      for (const session of sessions) {
+        session.scopeId = newScopeId;
+        this.store.set("sessions", session.id, session);
+      }
+      this.store.remove("scopes", oldScopeId);
+      this.store.set("scopes", newScopeId, { id: newScopeId, epoch, policy: old.policy, highWater: old.highWater });
+      for (const job of this.store.db.query("SELECT id,input FROM jobs WHERE status='revoked' OR json_extract(input,'$.scopeId')=? OR json_extract(input,'$.tree')=?").all(oldScopeId, oldTree)) {
+        const input = JSON.parse(job.input);
+        if (input.tree === oldTree || input.type === "publication" && input.scopeId === oldScopeId) {
+          this.store.db.query("UPDATE jobs SET status='revoked',fence=fence+1,error=NULL WHERE id=?").run(job.id);
+          this.store.db.query("DELETE FROM nodes WHERE tree LIKE ?").run(`["chunk","${job.id}",%`);
+        }
+      }
+      const tree = sharedTree(newScopeId, epoch);
+      this.store.set("views", tree, { tree, revision: 0, prefix: 0, nodes: [], shrinking: false });
+      const retained = oldNodes.map((oldNode, i) => ({ p: retained0[i], oldNode }));
+      for (let i = 0;i < retained.length; i++) {
+        const { p, oldNode } = retained[i];
+        p.scopeId = newScopeId;
+        p.publicationSeq = i + 1;
+        const n = { ...oldNode, id: hash(key(oldNode.id, epoch)), tree, start: i, children: p.sourceCover, publicationId: p.id };
+        p.nodeId = n.id;
+        this.store.set("publications", p.id, p);
+        this.store.set("publicationsByTurn", key(p.sessionId, p.generation, p.turnId), p.id);
+        this.writeNode(n);
+      }
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(sharedTree(newScopeId, old.epoch));
+      this.store.remove("views", sharedTree(newScopeId, newScopeId === oldScopeId ? old.epoch : epoch));
+      this.schedulePublications();
+    });
+  }
   session(id) {
     const s = this.store.get("sessions", id);
     insist(s, "UNKNOWN_SESSION", id);
@@ -1379,4 +1426,4 @@ export {
   turnKey
 };
 
-//# debugId=379D06C90CC2551664756E2164756E21
+//# debugId=AC2F32EC0D117F0D64756E2164756E21

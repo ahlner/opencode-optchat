@@ -390,6 +390,53 @@ class Engine {
       return session;
     });
   }
+  rescope(oldScopeId, newScopeId) {
+    insist(oldScopeId !== newScopeId, "SCOPE_MISMATCH", "Rescope needs a different scope");
+    const old = this.scope(oldScopeId);
+    this.store.transaction(() => {
+      const sessions = this.store.all("sessions").filter((s) => s.scopeId === oldScopeId);
+      if (!sessions.length)
+        insist(!this.store.get("scopes", oldScopeId), "SCOPE_MISMATCH", "Unknown scope");
+      const epoch = old.epoch + 1;
+      const oldTree = sharedTree(oldScopeId, old.epoch);
+      const retained0 = this.store.all("publications").filter((p) => p.scopeId === oldScopeId);
+      const oldNodes = retained0.map((p) => this.node(p.nodeId));
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(oldTree);
+      this.store.remove("views", oldTree);
+      for (const snap of this.store.all("snapshots"))
+        if (snap.scopeId === oldScopeId)
+          this.store.remove("snapshots", snap.id);
+      for (const session of sessions) {
+        session.scopeId = newScopeId;
+        this.store.set("sessions", session.id, session);
+      }
+      this.store.remove("scopes", oldScopeId);
+      this.store.set("scopes", newScopeId, { id: newScopeId, epoch, policy: old.policy, highWater: old.highWater });
+      for (const job of this.store.db.query("SELECT id,input FROM jobs WHERE status='revoked' OR json_extract(input,'$.scopeId')=? OR json_extract(input,'$.tree')=?").all(oldScopeId, oldTree)) {
+        const input = JSON.parse(job.input);
+        if (input.tree === oldTree || input.type === "publication" && input.scopeId === oldScopeId) {
+          this.store.db.query("UPDATE jobs SET status='revoked',fence=fence+1,error=NULL WHERE id=?").run(job.id);
+          this.store.db.query("DELETE FROM nodes WHERE tree LIKE ?").run(`["chunk","${job.id}",%`);
+        }
+      }
+      const tree = sharedTree(newScopeId, epoch);
+      this.store.set("views", tree, { tree, revision: 0, prefix: 0, nodes: [], shrinking: false });
+      const retained = oldNodes.map((oldNode, i) => ({ p: retained0[i], oldNode }));
+      for (let i = 0;i < retained.length; i++) {
+        const { p, oldNode } = retained[i];
+        p.scopeId = newScopeId;
+        p.publicationSeq = i + 1;
+        const n = { ...oldNode, id: hash(key(oldNode.id, epoch)), tree, start: i, children: p.sourceCover, publicationId: p.id };
+        p.nodeId = n.id;
+        this.store.set("publications", p.id, p);
+        this.store.set("publicationsByTurn", key(p.sessionId, p.generation, p.turnId), p.id);
+        this.writeNode(n);
+      }
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(sharedTree(newScopeId, old.epoch));
+      this.store.remove("views", sharedTree(newScopeId, newScopeId === oldScopeId ? old.epoch : epoch));
+      this.schedulePublications();
+    });
+  }
   session(id) {
     const s = this.store.get("sessions", id);
     insist(s, "UNKNOWN_SESSION", id);
@@ -1427,8 +1474,8 @@ function memoryPolicy(rules, scopeId) {
 }
 
 // src/adapters/opencode/settings.ts
-import { homedir as homedir2 } from "os";
-import { join, isAbsolute } from "path";
+import { homedir as homedir3 } from "os";
+import { join as join2, isAbsolute } from "path";
 
 // src/adapters/opencode/settings-rpc.ts
 import { Rpc } from "@opencode/plugin/rpc";
@@ -1440,13 +1487,12 @@ var schema = {
     enabled: { type: "boolean" },
     captureContent: { type: "boolean" },
     database: { type: "string", minLength: 1 },
-    scopeId: { type: "string", minLength: 1 },
     compactorModel: { type: "object", additionalProperties: false, properties: { providerID: { type: "string", minLength: 1 }, id: { type: "string", minLength: 1 } }, required: ["providerID", "id"] },
     memoryBytes: { type: "integer", minimum: 0 },
     safetyTokens: { type: "integer", minimum: 256 },
     waitMs: { type: "integer", minimum: 1, maximum: 300000 }
   },
-  required: ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"]
+  required: ["enabled", "database", "memoryBytes", "safetyTokens", "waitMs"]
 };
 var counts = { type: "integer", minimum: 0 };
 var statusSchema = { type: "object", additionalProperties: false, properties: {
@@ -1473,11 +1519,20 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
     required: ["pending", "running", "expired", "failed", "done", "revoked"]
   }
 }, required: ["enabled", "databaseExists", "sessions", "originals", "summaries", "publications", "activeTurns", "jobs"] };
+var candidateSchema = { type: "object", additionalProperties: false, properties: {
+  database: { type: "string", minLength: 1 },
+  scopeId: { type: "string", minLength: 1 },
+  sessions: counts,
+  publications: counts,
+  modified: counts
+}, required: ["database", "scopeId", "sessions", "publications", "modified"] };
 var SettingsRpc = Rpc.define({ id: "optchat.settings", methods: {
   read: { input: { type: "object", additionalProperties: false }, output: schema },
   write: { input: schema, output: schema },
   status: { input: { type: "object", additionalProperties: false }, output: statusSchema },
-  retry: { input: { type: "object", additionalProperties: false }, output: statusSchema }
+  retry: { input: { type: "object", additionalProperties: false }, output: statusSchema },
+  candidates: { input: { type: "object", additionalProperties: false }, output: { type: "array", items: candidateSchema } },
+  adopt: { input: { type: "object", additionalProperties: false, properties: { database: { type: "string", minLength: 1 } }, required: ["database"] }, output: statusSchema }
 }, events: {} });
 
 // src/adapters/opencode/settings-status.ts
@@ -1594,17 +1649,81 @@ function sameDirectory(left, right) {
   }
 }
 
+// src/adapters/opencode/adoption.ts
+import { Database as Database3 } from "bun:sqlite";
+import { existsSync as existsSync2, readdirSync, rmSync, statSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { join } from "path";
+function memoryRoot() {
+  return join(process.env.XDG_DATA_HOME || join(homedir2(), ".local", "share"), "optchat");
+}
+function memoryCandidates(root, currentDatabase) {
+  if (!existsSync2(root))
+    return [];
+  const result = [];
+  for (const entry of readdirSync(root)) {
+    const database = join(root, entry, "memory.sqlite");
+    if (database === currentDatabase || !existsSync2(database))
+      continue;
+    try {
+      const db = new Database3(database, { readonly: true });
+      try {
+        const scope = db.query("SELECT id FROM entities WHERE bucket='scopes' LIMIT 1").get()?.id;
+        if (!scope)
+          continue;
+        const sessions = db.query("SELECT count(*) n FROM entities WHERE bucket='sessions'").get().n;
+        if (!sessions)
+          continue;
+        const publications = db.query("SELECT count(*) n FROM entities WHERE bucket='publications'").get().n;
+        result.push({ database, scopeId: scope, sessions, publications, modified: statSync(database).mtimeMs });
+      } finally {
+        db.close();
+      }
+    } catch {}
+  }
+  return result.sort((a, b) => b.modified - a.modified);
+}
+function adoptMemory(sourceDatabase, targetDatabase, targetScopeId) {
+  insist(sourceDatabase !== targetDatabase, "CONFIG", "Select a different memory database");
+  const source = new Store(sourceDatabase);
+  let oldScopeId;
+  try {
+    const scopes = source.all("scopes");
+    insist(scopes.length === 1 && scopes[0].id !== targetScopeId, "CONFIG", "The selected database must contain exactly one other scope");
+    oldScopeId = scopes[0].id;
+  } finally {
+    source.close();
+  }
+  for (const suffix of ["", "-wal", "-shm"])
+    if (existsSync2(`${targetDatabase}${suffix}`))
+      rmSync(`${targetDatabase}${suffix}`);
+  const reader = new Database3(sourceDatabase, { readonly: true });
+  try {
+    reader.run("VACUUM INTO ?", [targetDatabase]);
+  } finally {
+    reader.close();
+  }
+  const target = new Store(targetDatabase);
+  try {
+    new Engine(target).rescope(oldScopeId, targetScopeId);
+    target.set("settings", "adapterScope", targetScopeId);
+    return target.all("sessions").length;
+  } finally {
+    target.close();
+  }
+}
+
 // src/adapters/opencode/settings.ts
 async function setupSettings(ctx, start) {
   insist(ctx.app.version === "2.0.26", "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.26 only");
   if (!ctx.rpc || !ctx.storage)
     return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;
-  const scopeId = automaticScope(ctx.location.project.id, ctx.location.project.canonical), identity = scopeId.slice("local:".length);
+  const scopeId = automaticScope(ctx.location.project.id, ctx.location.project.canonical);
+  const identity = scopeId.slice("local:".length);
   const defaults = {
     enabled: false,
-    database: join(process.env.XDG_DATA_HOME || join(homedir2(), ".local", "share"), "optchat", identity, "memory.sqlite"),
-    scopeId,
+    database: join2(process.env.XDG_DATA_HOME || join2(homedir3(), ".local", "share"), "optchat", identity, "memory.sqlite"),
     memoryBytes: 16000,
     safetyTokens: 2048,
     waitMs: 30000,
@@ -1678,7 +1797,7 @@ async function setupSettings(ctx, start) {
   const validate = async (value) => {
     validateSummaryAcceptBytes(value.summaryAcceptBytes ?? defaultSummaryAcceptBytes);
     insist(value.captureContent === undefined || typeof value.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
-    insist(isAbsolute(value.database) && value.scopeId.trim(), "CONFIG", "Use an absolute database path and a nonempty scope");
+    insist(isAbsolute(value.database), "CONFIG", "Use an absolute database path");
     insist(Number.isSafeInteger(value.memoryBytes) && value.memoryBytes >= 0 && Number.isSafeInteger(value.safetyTokens) && value.safetyTokens >= 256, "CONFIG", "Use valid memory and safety budgets");
     insist(Number.isSafeInteger(value.waitMs) && value.waitMs >= 1 && value.waitMs <= 300000, "CONFIG", "Use a wait between 1 and 300000 milliseconds");
     if (value.enabled) {
@@ -1690,7 +1809,7 @@ async function setupSettings(ctx, start) {
     }
   };
   await activate(settings);
-  const publicSettings = () => Object.fromEntries(["enabled", "database", "scopeId", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent", "summaryAcceptBytes"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
+  const publicSettings = () => Object.fromEntries(["enabled", "database", "compactorModel", "memoryBytes", "safetyTokens", "waitMs", "captureContent", "summaryAcceptBytes"].filter((k) => settings[k] !== undefined).map((k) => [k, settings[k]]));
   let rpc;
   try {
     rpc = await ctx.rpc.register(SettingsRpc, {
@@ -1701,12 +1820,29 @@ async function setupSettings(ctx, start) {
         retryMemoryJobs(settings.database);
         return memoryStatus(settings.database, settings.enabled);
       }),
+      candidates: async () => memoryCandidates(memoryRoot(), settings.database),
+      adopt: async (input) => serial(async () => {
+        insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
+        insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");
+        insist(!changing && !activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
+        const candidate = memoryCandidates(memoryRoot(), settings.database).find((c) => c.database === input.database);
+        insist(candidate, "NOT_FOUND", "Select a listed memory database");
+        changing = true;
+        try {
+          await stop();
+          adoptMemory(candidate.database, settings.database, scopeId);
+          await activate(settings);
+        } finally {
+          changing = false;
+        }
+        return memoryStatus(settings.database, settings.enabled);
+      }),
       write: async (input) => serial(async () => {
         insist(!closing, "SETTINGS_CLOSED", "Settings are closing");
         insist(!explicit, "CONFIG_MANAGED", "Remove explicit plugin options before using TUI settings");
         const next = { summaryAcceptBytes: defaultSummaryAcceptBytes, ...input };
         await validate(next);
-        insist(next.database === settings.database && next.scopeId === settings.scopeId, "SCOPE_LOCKED", "The project database and scope cannot change in this dialog");
+        insist(next.database === settings.database, "SCOPE_LOCKED", "The project database cannot change in this dialog");
         insist(!activeRequests, "SETTINGS_BUSY", "Wait until active memory requests finish");
         changing = true;
         try {
@@ -1783,7 +1919,7 @@ function pause(ms, signal) {
 }
 
 // src/adapters/opencode/diagnostics.ts
-import { appendFileSync, closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, renameSync, statSync } from "fs";
+import { appendFileSync, closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, renameSync, statSync as statSync2 } from "fs";
 var fields = new Set(["operationId", "parentId", "sessionId", "eventType", "phase", "elapsedMs", "queueMs", "queued", "active", "driftMs", "jobId", "kind", "fence", "leaseUntil", "inputBytes", "outputBytes", "messages", "terminals", "records", "pending", "running", "expired", "failed", "done", "publications", "attempt", "delayMs", "errorCode", "aborted", "waitMs", "memoryBytes", "safetyTokens", "moduleHash", "boundary", "prefix", "expectedScopeHash", "actualScopeHash", "expectedProjectHash", "actualProjectHash"]);
 for (const field of ["requestId", "inputHash", "sourceId", "tree", "start", "count", "captureContent", "batchSize"])
   fields.add(field);
@@ -1839,7 +1975,7 @@ class Diagnostics {
         this.emit("content.omitted", { requestId, jobId, errorCode: "CONTENT_TOO_LARGE" });
         return;
       }
-      if (this.contentFd !== undefined && fstatSync(this.contentFd).ino !== statSync(this.contentPath).ino) {
+      if (this.contentFd !== undefined && fstatSync(this.contentFd).ino !== statSync2(this.contentPath).ino) {
         closeSync(this.contentFd);
         this.contentFd = undefined;
       }
@@ -1878,7 +2014,7 @@ class Diagnostics {
       if (fields.has(field) && (typeof value === "boolean" || typeof value === "number" && Number.isFinite(value) || typeof value === "string" && value.length <= 128))
         safe[field] = value;
     try {
-      if (this.fd !== undefined && fstatSync(this.fd).ino !== statSync(this.path).ino) {
+      if (this.fd !== undefined && fstatSync(this.fd).ino !== statSync2(this.path).ino) {
         closeSync(this.fd);
         this.fd = undefined;
       }
@@ -2017,26 +2153,53 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const config = ctx.options;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);
-  insist(config.database && isAbsolute2(config.database) && config.scopeId, "CONFIG", "Set an absolute database path and a stable user/project scopeId");
+  insist(config.database && isAbsolute2(config.database), "CONFIG", "Set an absolute database path");
   insist(config.fakeSummarizer || config.compactorModel, "CONFIG", "Select a real compactorModel (fakeSummarizer is for tests only)");
+  const scopeId = automaticScope(ctx.location?.project?.id ?? "global", ctx.location?.project?.canonical);
   const memoryBytes = config.memoryBytes ?? 16000, safetyTokens = config.safetyTokens ?? 2048, waitMs = config.waitMs ?? 30000;
   insist(Number.isSafeInteger(waitMs) && waitMs > 0 && waitMs <= 300000, "CONFIG", "waitMs must be an integer between 1 and 300000");
   insist(Number.isSafeInteger(memoryBytes) && memoryBytes >= 0 && Number.isSafeInteger(safetyTokens) && safetyTokens >= 256, "CONFIG", "Invalid memory/safety budget");
   insist(config.captureContent === undefined || typeof config.captureContent === "boolean", "CONFIG", "Content capture must be a boolean");
   await mkdir(dirname(config.database), { recursive: true, mode: 448 });
   const store = new Store(config.database);
-  try {
-    store.transaction(() => {
-      const bound = store.get("settings", "adapterScope");
-      insist(!bound || bound === config.scopeId, "SCOPE_MISMATCH", "Use a separate adapter database for each trust scope");
-      insist(store.all("scopes").every((scope) => scope.id === config.scopeId), "SCOPE_MISMATCH", "This database contains jobs from a different trust scope");
-      store.set("settings", "adapterScope", config.scopeId);
-    });
-  } catch (error) {
-    store.close();
-    throw error;
-  }
+  const canonical = ctx.location?.project?.canonical;
+  const legacyMigration = store.transaction(() => {
+    const bound = store.get("settings", "adapterScope");
+    const scopes = store.all("scopes");
+    if ((!bound || bound === scopeId) && scopes.every((scope) => scope.id === scopeId))
+      return false;
+    const legacy = automaticScope("global", canonical);
+    if (bound !== undefined && bound !== legacy)
+      return false;
+    if (!scopes.length || !scopes.every((scope) => scope.id === legacy))
+      return false;
+    if (legacy === scopeId)
+      return false;
+    new Engine(store).rescope(bound ?? legacy, scopeId);
+    store.set("settings", "adapterScope", scopeId);
+    return true;
+  });
+  let scopeBlocked = false;
+  store.transaction(() => {
+    const bound = store.get("settings", "adapterScope");
+    if (bound && bound !== scopeId || !store.all("scopes").every((scope) => scope.id === scopeId)) {
+      scopeBlocked = true;
+      store.set("adapterErrors", "SCOPE_MISMATCH", { code: "SCOPE_MISMATCH", timestamp: new Date().toISOString() });
+    }
+  });
   const diagnostics = new Diagnostics(config.database, () => store.db.query("SELECT COALESCE(SUM(status='pending'),0) pending, COALESCE(SUM(status='running'),0) running, COALESCE(SUM(status='running' AND leaseUntil<?),0) expired, COALESCE(SUM(status='failed'),0) failed, COALESCE(SUM(status='done'),0) done FROM jobs").get(Date.now()), 5000, 2 * 1024 * 1024, config.captureContent === true);
+  if (scopeBlocked) {
+    await ctx.session?.hook?.("context", async (event) => {
+      event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => !["optchat_zoom", "optchat_source", "optchat_search"].includes(name)));
+      event.system = [...event.system, { type: "text", text: "OptChat memory is unavailable for this entire turn. Use the native conversation and current tools only. Do not claim cross-session memory access." }];
+      diagnostics.emit("primary.native", { sessionId: event.sessionID, errorCode: "SCOPE_MISMATCH" });
+    });
+    diagnostics.close();
+    store.close();
+    return () => Promise.resolve();
+  }
+  if (legacyMigration)
+    diagnostics.emit("scope.rescoped", { from: "legacy-global", to: hash(scopeId) });
   diagnostics.emit("configuration", { waitMs, memoryBytes, safetyTokens });
   const falseReadinessDisable = /^(?:(?:MemoryError: )?SESSION_DISABLED: |(?:Agent policy reconciliation failed|Lifecycle reconciliation failed|Reconciliation failed): )*MemoryError: MEMORY_NOT_READY: Own sealed records are not summarized yet$/;
   const falseShutdownDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed|Event stream failed): RangeError: Cannot use a closed database$/;
@@ -2090,16 +2253,16 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (["job.done", "job.release", "job.unowned", "job.failed"].includes(event))
       activeJob = undefined;
   } }), retrieval = new Retrieval(engine);
-  const repairedNodes = engine.repairInvalidSummaries(config.scopeId);
-  const repairedJobs = engine.repairDanglingJobs(config.scopeId);
+  const repairedNodes = engine.repairInvalidSummaries(scopeId);
+  const repairedJobs = engine.repairDanglingJobs(scopeId);
   if (repairedJobs)
     diagnostics.emit("dependencies.repaired", { count: repairedJobs });
   if (repairedNodes)
     diagnostics.emit("summary.repaired", { count: repairedNodes });
-  const recoveredBatches = engine.recoverRejectedBatches(config.scopeId);
+  const recoveredBatches = engine.recoverRejectedBatches(scopeId);
   if (recoveredBatches)
     diagnostics.emit("batch.recovered", { count: recoveredBatches });
-  const recoveredProviders = engine.recoverProviderFailures(config.scopeId);
+  const recoveredProviders = engine.recoverProviderFailures(scopeId);
   if (recoveredProviders)
     diagnostics.emit("provider.recovered", { count: recoveredProviders });
   let tail = Promise.resolve(), stopped = false, operationSignal;
@@ -2150,7 +2313,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     try {
       insist(activePhase === "primary.context" || !store.get("settings", "backgroundRecovery")?.paused, "BACKGROUND_PAUSED", "Automatic preparation paused without progress. Confirm Retry failed compaction to resume. Originals remain retained.");
       for (const session of store.all("sessions"))
-        if (!session.disabled && session.scopeId === config.scopeId && engine.preparationStatus(session.id).failed) {
+        if (!session.disabled && session.scopeId === scopeId && engine.preparationStatus(session.id).failed) {
           throw readinessFailure(session.id, new MemoryError("MEMORY_NOT_READY", "A retained summary dependency failed"));
         }
       await diagnostics.span("compactor.drain", () => engine.drain(1e5, operationSignal), { parentId: activeOperation });
@@ -2210,8 +2373,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       const projectId = config.projectId ?? info.projectID;
       const legacyScopeDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed): MemoryError: SCOPE_MISMATCH: Session cannot silently change scope$/;
       const nativeDirectory = info.location?.directory, canonical = ctx.location?.project?.canonical;
-      const verifiedLegacyScope = nativeDirectory && (config.scopeId === automaticScope("global", nativeDirectory) || sameDirectory(nativeDirectory, canonical) && config.scopeId === automaticScope("global", canonical));
-      if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined && existing.scopeId === config.scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) && ctx.location?.project?.id === projectId && verifiedLegacyScope && (!existing.disabled || legacyScopeDisable.test(existing.disabled))) {
+      const legacyDirectoryMatch = nativeDirectory && (sameDirectory(nativeDirectory, canonical) || sameDirectory(nativeDirectory, ctx.location?.directory));
+      if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined && existing.scopeId === scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) && ctx.location?.project?.id === projectId && legacyDirectoryMatch && (!existing.disabled || legacyScopeDisable.test(existing.disabled))) {
         store.transaction(() => {
           existing.projectId = projectId;
           delete existing.disabled;
@@ -2219,17 +2382,17 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           if (!store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(sessionID, existing.generation).n)
             store.remove("adapter", sessionID);
         });
-        diagnostics.emit("scope.discovery_migrated", { sessionId: sessionID, actualProjectHash: hash(projectId), actualScopeHash: hash(config.scopeId) });
+        diagnostics.emit("scope.discovery_migrated", { sessionId: sessionID, actualProjectHash: hash(projectId), actualScopeHash: hash(scopeId) });
       }
-      if (existing && (existing.scopeId !== config.scopeId || existing.projectId !== projectId))
+      if (existing && (existing.scopeId !== scopeId || existing.projectId !== projectId))
         diagnostics.emit("scope.mismatch", {
           sessionId: sessionID,
           expectedScopeHash: hash(existing.scopeId),
-          actualScopeHash: hash(config.scopeId),
+          actualScopeHash: hash(scopeId),
           expectedProjectHash: hash(existing.projectId),
           actualProjectHash: hash(projectId)
         });
-      const s = engine.register(sessionID, config.scopeId, projectId, info.parentID);
+      const s = engine.register(sessionID, scopeId, projectId, info.parentID);
       const agentId = requestAgent ?? info.agent ?? store.get("adapter", sessionID)?.agentId ?? "build";
       const deadline = Date.now() + waitMs;
       let agent;
@@ -2243,7 +2406,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           await operation(() => Bun.sleep(50));
         }
       }
-      const policy = memoryPolicy([...agent.data.permissions, ...info.permissions ?? []], config.scopeId);
+      const policy = memoryPolicy([...agent.data.permissions, ...info.permissions ?? []], scopeId);
       const previousPolicy = store.get("policies", sessionID);
       let interruptActive = false;
       store.transaction(() => {
@@ -2270,9 +2433,9 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
             store.set("adapter", sessionID, journal);
           } else
             store.remove("adapter", sessionID);
-          const scope = engine.scope(config.scopeId);
+          const scope = engine.scope(scopeId);
           scope.policy++;
-          store.set("scopes", config.scopeId, scope);
+          store.set("scopes", scopeId, scope);
         }
         s.broadcast = !info.parentID && policy.share;
         if (!policy.read)
@@ -2716,4 +2879,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=F459EDD94F59F96764756E2164756E21
+//# debugId=595E512C458EE14064756E2164756E21

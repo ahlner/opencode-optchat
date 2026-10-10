@@ -54,6 +54,49 @@ export class Engine {
       return session;
     });
   }
+  // Move all memory between trust scopes in one transaction. Shared derived state follows the scope;
+  // originals, summaries, and turns stay session-scoped and unchanged.
+  rescope(oldScopeId: string, newScopeId: string): void {
+    insist(oldScopeId !== newScopeId, "SCOPE_MISMATCH", "Rescope needs a different scope");
+    const old = this.scope(oldScopeId);
+    this.store.transaction(() => {
+      const sessions = this.store.all<Session>("sessions").filter(s => s.scopeId === oldScopeId);
+      if (!sessions.length) insist(!this.store.get("scopes", oldScopeId), "SCOPE_MISMATCH", "Unknown scope");
+      const epoch = old.epoch + 1;
+      const oldTree = sharedTree(oldScopeId, old.epoch);
+      // Read retained publication nodes before removing the old shared tree.
+      const retained0 = this.store.all<Publication>("publications").filter(p => p.scopeId === oldScopeId);
+      const oldNodes = retained0.map(p => this.node(p.nodeId));
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(oldTree);
+      this.store.remove("views", oldTree);
+      for (const snap of this.store.all<Snapshot>("snapshots")) if (snap.scopeId === oldScopeId) this.store.remove("snapshots", snap.id);
+      for (const session of sessions) { session.scopeId = newScopeId; this.store.set("sessions", session.id, session); }
+      this.store.remove("scopes", oldScopeId);
+      this.store.set("scopes", newScopeId, { id: newScopeId, epoch, policy: old.policy, highWater: old.highWater });
+      for (const job of this.store.db.query("SELECT id,input FROM jobs WHERE status='revoked' OR json_extract(input,'$.scopeId')=? OR json_extract(input,'$.tree')=?").all(oldScopeId, oldTree) as { id: string; input: string }[]) {
+        const input = JSON.parse(job.input) as { type: string; scopeId?: string; tree?: string };
+        if (input.tree === oldTree || input.type === "publication" && input.scopeId === oldScopeId) {
+          this.store.db.query("UPDATE jobs SET status='revoked',fence=fence+1,error=NULL WHERE id=?").run(job.id);
+          this.store.db.query("DELETE FROM nodes WHERE tree LIKE ?").run(`["chunk","${job.id}",%`);
+        }
+      }
+      // Rebuild the new shared tree through writeNode so views and sibling parent jobs follow.
+      const tree = sharedTree(newScopeId, epoch);
+      this.store.set("views", tree, { tree, revision: 0, prefix: 0, nodes: [], shrinking: false });
+      const retained = oldNodes.map((oldNode, i) => ({ p: retained0[i]!, oldNode }));
+      for (let i = 0; i < retained.length; i++) {
+        const { p, oldNode } = retained[i]!;
+        p.scopeId = newScopeId; p.publicationSeq = i + 1;
+        const n: Node = { ...oldNode, id: hash(key(oldNode.id, epoch)), tree, start: i, children: p.sourceCover, publicationId: p.id };
+        p.nodeId = n.id; this.store.set("publications", p.id, p); this.store.set("publicationsByTurn", key(p.sessionId, p.generation, p.turnId), p.id);
+        this.writeNode(n);
+      }
+      this.store.db.query("DELETE FROM nodes WHERE tree=?").run(sharedTree(newScopeId, old.epoch));
+      this.store.remove("views", sharedTree(newScopeId, newScopeId === oldScopeId ? old.epoch : epoch));
+      // Unpublished completed turns can retry publication in the new scope.
+      this.schedulePublications();
+    });
+  }
   session(id: string): Session {
     const s = this.store.get<Session>("sessions", id);
     insist(s, "UNKNOWN_SESSION", id); insist(!s.disabled, "SESSION_DISABLED", s.disabled ?? ""); return s;

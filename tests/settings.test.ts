@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
 import { setupSettings } from "../src/adapters/opencode/settings.ts";
 import { Store, Engine } from "../src/index.ts";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { registerSettingsDialog } from "../src/adapters/opencode/tui-dialog.ts";
 import { memoryStatus } from "../src/adapters/opencode/settings-status.ts";
+import { automaticScope } from "../src/adapters/opencode/settings-scope.ts";
 
 async function fixture() {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-settings-"));
   const database = join(root, "memory.sqlite");
-  const initial = { enabled: false, database, scopeId: "test-scope", memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false, summaryAcceptBytes: 640 };
+  const initial = { enabled: false, database, memoryBytes: 16000, safetyTokens: 2048, waitMs: 30000, captureContent: false, summaryAcceptBytes: 640 };
   let saved: any = initial, handlers: any, starts = 0, stops = 0, disposed = 0, failStorage = false;
   const context: any = { app: { version: "2.0.26" }, location: { project: { id: "test-project" } }, options: {},
     storage: { get: async () => saved, set: async (_key: string, value: any) => { if (failStorage) throw new Error("storage failure"); saved = value; } },
@@ -33,7 +34,6 @@ test("TUI settings start inactive, validate models, activate, persist, and dispo
     for (const next of [{ ...f.enable, compactorModel: undefined }, { ...f.enable, compactorModel: { providerID: "provider", id: "missing" } }, { ...f.enable, memoryBytes: -1 }, { ...f.enable, waitMs: 0 }, { ...f.enable, safetyTokens: 0 }, { ...f.enable, captureContent: "yes" }]) {
       await expect(f.handlers.write(next)).rejects.toThrow("CONFIG");
     }
-    await expect(f.handlers.write({ ...f.enable, scopeId: "another" })).rejects.toThrow("SCOPE_LOCKED");
     await expect(f.handlers.write({ ...f.enable, database: join(f.root, "other.sqlite") })).rejects.toThrow("SCOPE_LOCKED");
     expect(await f.handlers.write(f.enable)).toEqual(f.enable); expect(f.saved()).toEqual(f.enable);
     expect(f.counts().starts).toBe(1);
@@ -161,4 +161,44 @@ test("the terminal status dialog reads health and confirms retries without savin
   } as any);
   await command.run(); expect(alerts[0].message).toContain("Originals: 9"); expect(alerts[0].message).toContain("COMPACTION_FAILED");
   expect(retried).toBe(1); expect(confirmations).toBe(1);
+});
+
+test("adoption copies another project memory into the target database and rebinds its scope", async () => {
+  const f = await fixture();
+  const previousXdg = process.env.XDG_DATA_HOME;
+  try {
+    const data = join(f.root, "data"), source = join(data, "optchat", "source-identity", "memory.sqlite");
+    process.env.XDG_DATA_HOME = data;
+    await mkdir(dirname(source), { recursive: true });
+    const sourceStore = new Store(source), sourceEngine = new Engine(sourceStore);
+    sourceEngine.register("source-session", "local:other", "other-project");
+    sourceEngine.admit("source-session", "turn");
+    sourceEngine.append({ sessionId: "source-session", generation: 0, eventKey: "evt", turnId: "turn", kind: "user", timestamp: new Date().toISOString(), projectId: "other-project", payload: "ADOPTED_PAYLOAD" });
+    sourceEngine.finish("source-session", "turn", "completed");
+    await sourceEngine.drain();
+    sourceStore.close();
+
+    const candidates = await f.handlers.candidates({}) as { database: string; scopeId: string; sessions: number }[];
+    expect(candidates.map(candidate => candidate.database)).toContain(source);
+    await expect(f.handlers.adopt({ database: join(data, "missing.sqlite") })).rejects.toThrow("NOT_FOUND");
+
+    await f.handlers.write(f.enable);
+    const status = await f.handlers.adopt({ database: source });
+    expect(status).toMatchObject({ originals: 1, sessions: 1, databaseExists: true });
+
+    const target = new Store(f.database);
+    try {
+      const scope = JSON.parse((target.db.query("SELECT value FROM entities WHERE bucket='scopes'").get() as { value: string }).value) as { id: string };
+      expect(scope.id).toBe(automaticScope("test-project", undefined));
+      expect(target.all<{ scopeId: string }>("sessions").map(session => session.scopeId)).toEqual([scope.id]);
+      expect(target.get<string>("settings", "adapterScope")).toBe(scope.id);
+      expect((target.db.query("SELECT count(*) AS n FROM sources").get() as { n: number }).n).toBe(1);
+    } finally { target.close(); }
+
+    const retained = new Store(source);
+    try { expect(retained.all("sessions")).toHaveLength(1); } finally { retained.close(); }
+  } finally {
+    if (previousXdg === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = previousXdg;
+    await f.cleanup?.(); await rm(f.root, { recursive: true, force: true });
+  }
 });

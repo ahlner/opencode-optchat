@@ -72,6 +72,13 @@ These settings do not replace system permissions, encryption, or a backup policy
 The core supports multiple scopes.
 Each host adapter uses one database for one scope.
 This keeps compaction jobs with the provider configured for that scope.
+The adapter derives the scope from the host project identity, not from configuration.
+A copied or moved project receives a rescope proposal with confirmation before shared memory moves.
+
+A copy gets a new project identity and a new empty database.
+The operator can adopt another project's memory through the settings dialog.
+Adoption copies the selected database into the project database and rebinds its scope.
+The source database stays unchanged.
 
 ## Trees and publications
 
@@ -177,6 +184,8 @@ The engine checks generated sizes independently, including custom summarizers an
 Existing immutable nodes retain their original acceptance limits during repair, migration, and settings changes.
 More correction attempts cannot guarantee valid or faithful model output.
 It never cuts output bytes to satisfy the limit.
+The size correction compresses the rejected response as untrusted data.
+The compressed response may contain only facts that the original evidence supports.
 
 The adapter limits atomic claims to one unexpired running job per database.
 The standalone engine retains its default parallel worker support.
@@ -264,7 +273,7 @@ Tool results that the host marks as shortened retain `truncated: true`.
 
 Memory policy evaluates ordered native agent rules, followed by session rules.
 `optchat.read` and `optchat.share` use the scope identifier as their resource.
-The configured scope supplies the initial grant.
+The derived scope supplies the initial grant.
 Both `deny` and `ask` revoke that grant.
 
 A change increases the policy version and retention epoch.
@@ -274,6 +283,8 @@ It interrupts active turns instead of continuing them under a new policy.
 A worktree move within the same stable host project preserves history and publication order.
 Sources retain their original worktree provenance.
 The adapter does not silently accept a different project or scope.
+A rescope keeps original records and rebuilds shared memory only after user confirmation.
+A blocked database keeps the Location in native mode without memory tools.
 
 ## Limits
 
@@ -290,7 +301,8 @@ The adapter does not silently accept a different project or scope.
 - The adapter imports completed originals at host idle boundaries.
   Intermediate streaming state remains in the host.
 - A scope change is not an implicit permission change.
-  It requires a separate adapter database and explicit configuration.
+  It requires user confirmation through the rescope flow.
+  Memory permission resources must match the derived scope identifier.
 - The adapter checks native agent and session memory rules.
   It does not replace an external organization policy engine.
 - Summary quality depends on the configured model.

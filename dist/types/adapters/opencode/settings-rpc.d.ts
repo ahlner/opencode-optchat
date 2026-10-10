@@ -1,7 +1,6 @@
 export interface Settings {
     enabled: boolean;
     database: string;
-    scopeId: string;
     compactorModel?: {
         providerID: string;
         id: string;
@@ -39,10 +38,6 @@ export declare const SettingsRpc: {
                         readonly type: "string";
                         readonly minLength: 1;
                     };
-                    readonly scopeId: {
-                        readonly type: "string";
-                        readonly minLength: 1;
-                    };
                     readonly compactorModel: {
                         readonly type: "object";
                         readonly additionalProperties: false;
@@ -72,7 +67,7 @@ export declare const SettingsRpc: {
                         readonly maximum: 300000;
                     };
                 };
-                readonly required: readonly ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"];
+                readonly required: readonly ["enabled", "database", "memoryBytes", "safetyTokens", "waitMs"];
             };
         };
         readonly write: {
@@ -95,10 +90,6 @@ export declare const SettingsRpc: {
                         readonly type: "string";
                         readonly minLength: 1;
                     };
-                    readonly scopeId: {
-                        readonly type: "string";
-                        readonly minLength: 1;
-                    };
                     readonly compactorModel: {
                         readonly type: "object";
                         readonly additionalProperties: false;
@@ -128,7 +119,7 @@ export declare const SettingsRpc: {
                         readonly maximum: 300000;
                     };
                 };
-                readonly required: readonly ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"];
+                readonly required: readonly ["enabled", "database", "memoryBytes", "safetyTokens", "waitMs"];
             };
             output: {
                 readonly type: "object";
@@ -149,10 +140,6 @@ export declare const SettingsRpc: {
                         readonly type: "string";
                         readonly minLength: 1;
                     };
-                    readonly scopeId: {
-                        readonly type: "string";
-                        readonly minLength: 1;
-                    };
                     readonly compactorModel: {
                         readonly type: "object";
                         readonly additionalProperties: false;
@@ -182,7 +169,7 @@ export declare const SettingsRpc: {
                         readonly maximum: 300000;
                     };
                 };
-                readonly required: readonly ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"];
+                readonly required: readonly ["enabled", "database", "memoryBytes", "safetyTokens", "waitMs"];
             };
         };
         readonly status: {
@@ -292,6 +279,152 @@ export declare const SettingsRpc: {
             readonly input: {
                 readonly type: "object";
                 readonly additionalProperties: false;
+            };
+            readonly output: {
+                readonly type: "object";
+                readonly additionalProperties: false;
+                readonly properties: {
+                    readonly jobError: {
+                        readonly type: "string";
+                    };
+                    readonly retryInSeconds: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly retryAttempt: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly enabled: {
+                        readonly type: "boolean";
+                    };
+                    readonly databaseExists: {
+                        readonly type: "boolean";
+                    };
+                    readonly sessions: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly originals: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly summaries: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly publications: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly activeTurns: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly nativeTurns: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly remainingMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly totalMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly processedMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly inventoryComplete: {
+                        readonly type: "boolean";
+                    };
+                    readonly lastError: {
+                        readonly type: "string";
+                    };
+                    readonly jobs: {
+                        readonly type: "object";
+                        readonly additionalProperties: false;
+                        readonly properties: {
+                            readonly pending: {
+                                readonly type: "integer";
+                                readonly minimum: 0;
+                            };
+                            readonly running: {
+                                readonly type: "integer";
+                                readonly minimum: 0;
+                            };
+                            readonly expired: {
+                                readonly type: "integer";
+                                readonly minimum: 0;
+                            };
+                            readonly failed: {
+                                readonly type: "integer";
+                                readonly minimum: 0;
+                            };
+                            readonly done: {
+                                readonly type: "integer";
+                                readonly minimum: 0;
+                            };
+                            readonly revoked: {
+                                readonly type: "integer";
+                                readonly minimum: 0;
+                            };
+                        };
+                        readonly required: readonly ["pending", "running", "expired", "failed", "done", "revoked"];
+                    };
+                };
+                readonly required: readonly ["enabled", "databaseExists", "sessions", "originals", "summaries", "publications", "activeTurns", "jobs"];
+            };
+        };
+        readonly candidates: {
+            readonly input: {
+                readonly type: "object";
+                readonly additionalProperties: false;
+            };
+            readonly output: {
+                readonly type: "array";
+                readonly items: {
+                    readonly type: "object";
+                    readonly additionalProperties: false;
+                    readonly properties: {
+                        readonly database: {
+                            readonly type: "string";
+                            readonly minLength: 1;
+                        };
+                        readonly scopeId: {
+                            readonly type: "string";
+                            readonly minLength: 1;
+                        };
+                        readonly sessions: {
+                            readonly type: "integer";
+                            readonly minimum: 0;
+                        };
+                        readonly publications: {
+                            readonly type: "integer";
+                            readonly minimum: 0;
+                        };
+                        readonly modified: {
+                            readonly type: "integer";
+                            readonly minimum: 0;
+                        };
+                    };
+                    readonly required: readonly ["database", "scopeId", "sessions", "publications", "modified"];
+                };
+            };
+        };
+        readonly adopt: {
+            readonly input: {
+                readonly type: "object";
+                readonly additionalProperties: false;
+                readonly properties: {
+                    readonly database: {
+                        readonly type: "string";
+                        readonly minLength: 1;
+                    };
+                };
+                readonly required: readonly ["database"];
             };
             readonly output: {
                 readonly type: "object";

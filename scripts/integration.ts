@@ -77,7 +77,7 @@ export default Plugin.define({ id: "optchat.integration", async setup(ctx) {
 } });`);
 await Bun.write(join(root, "project/plugin/package.json"), JSON.stringify({ name: "optchat-integration", type: "module", exports: "./index.ts" }));
 await Bun.write(join(root, "project/opencode.json"), JSON.stringify({
-  plugins: [{ package: gitPackage ?? join(root, "project/plugin"), ...(managedSettings ? {} : { options: { database: dbPath, scopeId: "fixture-user:stable-project", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }) }, ...(gitPackage ? [{ package: join(root, "project/plugin") }] : [])], model: "fixture/fixture",
+  plugins: [{ package: gitPackage ?? join(root, "project/plugin"), ...(managedSettings ? {} : { options: { database: dbPath, compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 30000 } }) }, ...(gitPackage ? [{ package: join(root, "project/plugin") }] : [])], model: "fixture/fixture",
   agents: { memory_denied: { description: "Native agent memory-denial fixture", mode: "primary", permissions: [{ action: "optchat.read", resource: "*", effect: "deny" }] } },
   providers: { fixture: { name: "Loopback fixture", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${sink.port}/v1`, apiKey: "local-fixture" }, models: { fixture: { capabilities: { tools: true }, limit: { context: 131072, output: 8192 } } } } },
 }));
@@ -181,6 +181,7 @@ try {
   const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
   assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);
   for (let i = 0; i < 4; i++) assert(batchSources.some(r => r.kind === "tool_result" && r.payload.includes(`BATCH_ITEM_${i}`) && r.payload.includes("x".repeat(700))), "Every full result remains retained");
+  const scopeId = JSON.parse((db!.query("SELECT value FROM entities WHERE bucket='scopes'").get() as { value: string }).value).id as string;
   if (managedSettings) {
     await until(() => publications().some(p => p.sessionId === c.id), "C publication before settings change");
      const settings = await settingsCall("read"), count = publications().length;
@@ -255,7 +256,7 @@ try {
       finally { legacyStore.close(); }
       await Bun.write(join(root, "project-discovered.marker"), "Use the native project metadata on restart\n");
       proc.kill("SIGKILL"); await proc.exited; proc = start(); await ready();
-      assert.equal((await settingsCall("read")).scopeId, settings.scopeId, "Project discovery preserves the configured trust scope");
+      assert.equal((await settingsCall("read")).database, dbPath, "Project discovery preserves the configured database");
       assert.equal((await api("GET", `/api/session/${a.id}`)).projectID, nativeProject);
       const beforeDiscovery = requests.length;
       await api("POST", `/api/session/${a.id}/prompt`, { text: "AFTER_PROJECT_DISCOVERY_CURRENT" });
@@ -361,13 +362,13 @@ try {
   const restricted = await create();
   await api("POST", `/api/session/${restricted.id}/prompt`, { text: "REVOKE_SHARE_CURRENT" });
   await until(() => publications().some(p => p.sessionId === restricted.id), "permission test publication");
-  await api("PATCH", `/api/session/${restricted.id}`, { permissions: [{ action: "optchat.share", resource: "fixture-user:stable-project", effect: "deny" }] });
+  await api("PATCH", `/api/session/${restricted.id}`, { permissions: [{ action: "optchat.share", resource: scopeId, effect: "deny" }] });
   await until(() => !publications().some(p => p.sessionId === restricted.id), "native permission revokes publication");
   assert(db.query("SELECT id FROM sources WHERE session=?").all(restricted.id).length > 0, "Share denial keeps authorized own originals");
   await api("POST", `/api/session/${restricted.id}/prompt`, { text: "PRIVATE_PERMISSION_CURRENT" });
   await until(async () => (await api("GET", `/api/session/${restricted.id}`)).outcome === "succeeded", "private session continues without broadcast");
   assert(!publications().some(p => p.sessionId === restricted.id), "Denied turns are not broadcast");
-  await api("PATCH", `/api/session/${restricted.id}`, { permissions: [{ action: "optchat.read", resource: "fixture-user:stable-project", effect: "deny" }] });
+  await api("PATCH", `/api/session/${restricted.id}`, { permissions: [{ action: "optchat.read", resource: scopeId, effect: "deny" }] });
   await until(() => !db!.query("SELECT id FROM sources WHERE session=?").all(restricted.id).length, "read revocation purges originals");
   const beforeDenied = requests.length;
   await api("POST", `/api/session/${restricted.id}/prompt`, { text: "DENIED_MEMORY_CURRENT" });
@@ -418,7 +419,7 @@ try {
   await api("POST", `/api/session/${activeRevocation.id}/prompt`, { text: "INTERRUPT_CURRENT: permission will change during streaming" });
   await until(() => requests.some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("permission will change"))), "active request reaches fixture");
   const policyBefore = JSON.parse((db.query("SELECT value FROM entities WHERE bucket='scopes'").get() as { value: string }).value).policy;
-  await api("PATCH", `/api/session/${activeRevocation.id}`, { permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "optchat.read", resource: "fixture-user:stable-project", effect: "deny" }] });
+  await api("PATCH", `/api/session/${activeRevocation.id}`, { permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "optchat.read", resource: scopeId, effect: "deny" }] });
   await until(async () => (await api("GET", `/api/session/${activeRevocation.id}`)).outcome === "interrupted", "permission change interrupts admitted request");
   assert.equal(db.query("SELECT id FROM sources WHERE session=?").all(activeRevocation.id).length, 0, "Revoked active data cannot be imported on interruption");
   assert(JSON.parse((db.query("SELECT value FROM entities WHERE bucket='scopes'").get() as { value: string }).value).policy > policyBefore, "Native policy changes advance the pinned policy revision");

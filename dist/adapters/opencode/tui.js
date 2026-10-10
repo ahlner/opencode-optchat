@@ -12,13 +12,12 @@ var schema = {
     enabled: { type: "boolean" },
     captureContent: { type: "boolean" },
     database: { type: "string", minLength: 1 },
-    scopeId: { type: "string", minLength: 1 },
     compactorModel: { type: "object", additionalProperties: false, properties: { providerID: { type: "string", minLength: 1 }, id: { type: "string", minLength: 1 } }, required: ["providerID", "id"] },
     memoryBytes: { type: "integer", minimum: 0 },
     safetyTokens: { type: "integer", minimum: 256 },
     waitMs: { type: "integer", minimum: 1, maximum: 300000 }
   },
-  required: ["enabled", "database", "scopeId", "memoryBytes", "safetyTokens", "waitMs"]
+  required: ["enabled", "database", "memoryBytes", "safetyTokens", "waitMs"]
 };
 var counts = { type: "integer", minimum: 0 };
 var statusSchema = { type: "object", additionalProperties: false, properties: {
@@ -45,11 +44,20 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
     required: ["pending", "running", "expired", "failed", "done", "revoked"]
   }
 }, required: ["enabled", "databaseExists", "sessions", "originals", "summaries", "publications", "activeTurns", "jobs"] };
+var candidateSchema = { type: "object", additionalProperties: false, properties: {
+  database: { type: "string", minLength: 1 },
+  scopeId: { type: "string", minLength: 1 },
+  sessions: counts,
+  publications: counts,
+  modified: counts
+}, required: ["database", "scopeId", "sessions", "publications", "modified"] };
 var SettingsRpc = Rpc.define({ id: "optchat.settings", methods: {
   read: { input: { type: "object", additionalProperties: false }, output: schema },
   write: { input: schema, output: schema },
   status: { input: { type: "object", additionalProperties: false }, output: statusSchema },
-  retry: { input: { type: "object", additionalProperties: false }, output: statusSchema }
+  retry: { input: { type: "object", additionalProperties: false }, output: statusSchema },
+  candidates: { input: { type: "object", additionalProperties: false }, output: { type: "array", items: candidateSchema } },
+  adopt: { input: { type: "object", additionalProperties: false, properties: { database: { type: "string", minLength: 1 } }, required: ["database"] }, output: statusSchema }
 }, events: {} });
 
 // src/adapters/opencode/tui-status-model.ts
@@ -155,6 +163,7 @@ function registerSettingsDialog(ctx) {
         { title: `Admission wait: ${draft.waitMs} milliseconds`, value: "waitMs" },
         { title: "Show project scope and database", value: "scope" },
         { title: "Show memory status", value: "status" },
+        { title: "Adopt memory from another project", value: "adopt" },
         { title: "Retry failed compaction", value: "retry" },
         { title: `Capture compactor content: ${draft.captureContent ? "enabled" : "disabled"}`, value: "captureContent" },
         { title: `Summary size tolerance: ${draft.summaryAcceptBytes ?? 640} bytes`, value: "summaryAcceptBytes" },
@@ -175,10 +184,9 @@ function registerSettingsDialog(ctx) {
         if (selected)
           draft.compactorModel = JSON.parse(selected);
       } else if (field === "scope")
-        await ctx.ui.dialog.alert({ title: "Project memory", message: `Scope: ${draft.scopeId}
-Database: ${draft.database}
+        await ctx.ui.dialog.alert({ title: "Project memory", message: `Database: ${draft.database}
 Content log: ${draft.database}.content.ndjson
-This dialog cannot change the trust boundary.` });
+The trust scope derives from the host project. This dialog cannot change the trust boundary.` });
       else if (field === "status") {
         const status = await rpc.status({}, options);
         await ctx.ui.dialog.alert({ title: "Memory status", message: `${activityDetails(status)}
@@ -194,6 +202,19 @@ Jobs: ${JSON.stringify(status.jobs)}
 Last error: ${status.lastError ?? "none"}
 Diagnostics: ${draft.database}.diagnostics.ndjson
 Counts cover this database. Status does not certify summary accuracy.` });
+      } else if (field === "adopt") {
+        const candidates = await rpc.candidates({}, options);
+        if (!candidates.length) {
+          await ctx.ui.dialog.alert({ title: "Adopt memory", message: "No other project memory was found." });
+          continue;
+        }
+        const selected = await ctx.ui.dialog.select({ title: "Adopt memory", options: candidates.map((c) => ({ title: `${c.sessions} sessions, ${c.publications} publications \u2014 ${new Date(c.modified).toLocaleString()}`, value: c.database })) });
+        if (!selected)
+          continue;
+        if (await ctx.ui.dialog.confirm({ title: "Adopt this memory?", message: "This copies the selected project memory and rebuilds its shared view for the current project. The source project keeps its memory.", label: { confirm: "Adopt", cancel: "Cancel" } })) {
+          await rpc.adopt({ database: selected }, options);
+          ctx.ui.toast.show({ message: "Memory adopted from the selected project", variant: "success" });
+        }
       } else if (field === "retry") {
         if (await ctx.ui.dialog.confirm({ title: "Retry failed compaction?", message: "This requeues failed jobs and clears a background pause without deleting originals. Automatic preparation can incur model costs.", label: { confirm: "Retry", cancel: "Cancel" } })) {
           await rpc.retry({}, options);
@@ -301,4 +322,4 @@ export {
   tui_default as default
 };
 
-//# debugId=8261CA3CD4F4E20564756E2164756E21
+//# debugId=510BDBA5DC14758864756E2164756E21

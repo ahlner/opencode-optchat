@@ -7,6 +7,12 @@ export interface StatusIndicator {
 
 export function statusIndicator(status: MemoryStatus): StatusIndicator {
   const indicator = baseIndicator(status);
+  if (status.totalMessages !== undefined && status.processedMessages !== undefined && status.enabled) {
+    const mode = status.nativeTurns ? "N" : "M";
+    const state = status.jobs.failed || status.jobs.expired ? "!" : status.lastError === "BACKGROUND_PAUSED" ? "P" : "";
+    const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
+    return { text: `OC:${mode}${state} ${status.processedMessages}/${status.totalMessages}${status.inventoryComplete ? "" : "?"}m · ${jobs}j`, tone: indicator.tone };
+  }
   if (!status.enabled || status.remainingMessages === undefined) return indicator;
   const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
   if (status.remainingMessages || jobs) indicator.text += ` · ${status.remainingMessages} msgs left · ${jobs} jobs`;

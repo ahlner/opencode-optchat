@@ -19,16 +19,22 @@ describe("terminal memory status", () => {
       engine.register("a", "scope", "p"); engine.admit("a", "turn");
       for (const eventKey of ["msg_first:call", "msg_first:result", "msg_second:text"]) engine.append({ sessionId: "a", generation: 0, eventKey, turnId: "turn", kind: "assistant", payload: "Evidence", timestamp: "2026-10-10T00:00:00Z", projectId: "p" });
       engine.finish("a", "turn", "completed");
+      store.set("messageInventory", "a", { generation: 0, messages: [{ id: "msg_first", records: 2 }, { id: "msg_second", records: 1 }, { id: "msg_not_imported", records: 1 }] });
+      expect(memoryStatus(path, true).totalMessages).toBe(3);
+      expect(memoryStatus(path, true).processedMessages).toBe(0);
       expect(memoryStatus(path, true).remainingMessages).toBe(2);
       await engine.workOne(); expect(memoryStatus(path, true).remainingMessages).toBe(2);
       await engine.workOne(); expect(memoryStatus(path, true).remainingMessages).toBe(1);
       await engine.workOne(); const status = memoryStatus(path, true);
       expect(status.remainingMessages).toBe(0);
-      expect(statusIndicator(status).text).toContain("0 msgs left");
-      expect(statusIndicator(status).text).toContain("jobs");
+      expect(status.processedMessages).toBe(2);
+      expect(statusIndicator(status).text).toContain("2/3m");
+      expect(statusIndicator(status).text).toContain("j");
       status.nativeTurns = 1; status.jobs.failed = 1;
-      expect(statusIndicator(status).text).toContain("native · failed · 0 msgs left");
-      await engine.drain(); expect(statusIndicator(memoryStatus(path, true)).text).toBe("OptChat: ready");
+      expect(statusIndicator(status).text).toContain("OC:N! 2/3m");
+      await engine.drain(); expect(statusIndicator(memoryStatus(path, true)).text).toBe("OC:M 2/3m · 0j");
+      engine.register("unknown", "scope", "p");
+      expect(statusIndicator(memoryStatus(path, true)).text).toBe("OC:M 2/3?m · 0j");
     } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
   });
   test("shows disabled, ready, active, processing, and failed states", () => {

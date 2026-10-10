@@ -212,6 +212,17 @@ export declare const SettingsRpc: {
                         readonly type: "integer";
                         readonly minimum: 0;
                     };
+                    readonly totalMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly processedMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly inventoryComplete: {
+                        readonly type: "boolean";
+                    };
                     readonly lastError: {
                         readonly type: "string";
                     };
@@ -292,6 +303,17 @@ export declare const SettingsRpc: {
                     readonly remainingMessages: {
                         readonly type: "integer";
                         readonly minimum: 0;
+                    };
+                    readonly totalMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly processedMessages: {
+                        readonly type: "integer";
+                        readonly minimum: 0;
+                    };
+                    readonly inventoryComplete: {
+                        readonly type: "boolean";
                     };
                     readonly lastError: {
                         readonly type: "string";

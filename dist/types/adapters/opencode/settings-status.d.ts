@@ -8,6 +8,9 @@ export interface MemoryStatus {
     activeTurns: number;
     nativeTurns?: number;
     remainingMessages?: number;
+    totalMessages?: number;
+    processedMessages?: number;
+    inventoryComplete?: boolean;
     jobs: {
         pending: number;
         running: number;

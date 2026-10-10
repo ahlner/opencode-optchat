@@ -42,12 +42,17 @@ Database and scope identifiers remain fixed in this dialog to prevent accidental
 
 ### Memory status and recovery
 
-The live status bar shows `N msgs left` for imported messages with unfinished original summaries.
-It groups tool parts from the same host message into one message count.
-The separate `N jobs` count includes pending, running, and failed summary jobs, including parent and publication jobs.
-These counts cover the shared database, not only the visible session.
-Messages that the adapter has not imported are not included yet.
-Zero messages can therefore appear while derived summary jobs remain.
+The live status bar uses a compact format: `OC:N 24/160m · 33j`.
+This means 24 of 160 inventoried messages have complete original summaries, with 33 unfinished summary jobs.
+The adapter inventories completed history before importing its records and generating summaries.
+Tool parts from one host message count as one message.
+
+`N` means native mode. `M` means memory mode. `!` marks failed or expired jobs. `P` marks a background pause.
+
+A `?` after the total means some known sessions lack a current inventory.
+Totals can change when history changes or another session becomes known.
+Counts cover the shared database, not only the visible session.
+Parent and publication jobs can remain after all inventoried messages finish.
 
 The terminal status bar shows OptChat on the home screen and in sessions.
 It reads the current Location's server status every five seconds while visible.

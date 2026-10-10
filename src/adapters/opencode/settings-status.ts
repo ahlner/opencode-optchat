@@ -12,6 +12,9 @@ export interface MemoryStatus {
   activeTurns: number;
   nativeTurns?: number;
   remainingMessages?: number;
+  totalMessages?: number;
+  processedMessages?: number;
+  inventoryComplete?: boolean;
   jobs: { pending: number; running: number; expired: number; failed: number; done: number; revoked: number };
   lastError?: string;
 }
@@ -29,6 +32,21 @@ export function memoryStatus(database: string, enabled: boolean): MemoryStatus {
       status.publications = count("SELECT count(*) AS count FROM entities WHERE bucket='publications'");
       status.activeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='turns' AND json_extract(value,'$.outcome') IS NULL");
       status.nativeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='nativeActive'");
+      status.inventoryComplete = count(`SELECT count(*) AS count FROM entities s
+        WHERE s.bucket='sessions' AND json_extract(s.value,'$.disabled') IS NULL AND NOT EXISTS (
+          SELECT 1 FROM entities i WHERE i.bucket='messageInventory' AND i.id=s.id
+          AND json_extract(i.value,'$.generation')=json_extract(s.value,'$.generation'))`) === 0;
+      const inventory = db.query(`SELECT i.id AS session,json_extract(i.value,'$.generation') AS generation,
+          json_extract(m.value,'$.id') AS message,json_extract(m.value,'$.records') AS expected
+        FROM entities i JOIN entities s ON s.bucket='sessions' AND s.id=i.id,
+          json_each(i.value,'$.messages') m
+        WHERE i.bucket='messageInventory' AND json_extract(s.value,'$.disabled') IS NULL
+          AND json_extract(i.value,'$.generation')=json_extract(s.value,'$.generation')`).all() as { session: string; generation: number; message: string; expected: number }[];
+      const complete = db.query(`SELECT count(*) AS count FROM sources s WHERE s.session=? AND s.generation=?
+        AND substr(s.eventKey,1,instr(s.eventKey,':')-1)=? AND EXISTS (
+          SELECT 1 FROM nodes n WHERE n.tree=json_array('session',s.session,s.generation) AND n.start=s.seq AND n.count=1)`);
+      status.totalMessages = inventory.length;
+      status.processedMessages = inventory.filter(m => (complete.get(m.session,m.generation,m.message) as { count: number }).count === m.expected).length;
       status.remainingMessages = count(`SELECT count(*) AS count FROM (
         SELECT DISTINCT s.session,s.generation,
           CASE WHEN instr(s.eventKey,':')>0 THEN substr(s.eventKey,1,instr(s.eventKey,':')-1) ELSE s.eventKey END AS message

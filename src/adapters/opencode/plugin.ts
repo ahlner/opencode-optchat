@@ -274,6 +274,10 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       await prepareMemory();
     }
     const byId = new Map(raw.map(m => [m.id, m]));
+    store.set("messageInventory", sessionID, { generation: s.generation,
+      messages: raw.slice(0, raw.findLastIndex(m => m.type === "idle") + 1).flatMap(m => {
+        const records = extract(m).length; return records ? [{ id: m.id, records }] : [];
+      }) });
     const changed = Object.entries(journal.seen).filter(([id, digest]) => !byId.has(id) || fingerprint(byId.get(id)!) !== digest).map(([id]) => id);
     if (changed.length) {
       const records = engine.sources(sessionID, s.generation);

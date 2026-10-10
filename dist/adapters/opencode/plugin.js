@@ -921,6 +921,7 @@ class Engine {
   retire(sessionId, mode, preserve = 0, retainPublications = true) {
     this.store.transaction(() => {
       const session = this.session(sessionId), scope = this.scope(session.scopeId);
+      this.store.remove("messageInventory", sessionId);
       const retiredSources = this.sources(sessionId, session.generation);
       insist(Number.isSafeInteger(preserve) && preserve >= 0 && preserve <= retiredSources.length && (mode !== "delete" || preserve === 0), "INVALID_BOUNDARY", "Invalid retirement prefix");
       const prefix = retiredSources.slice(0, preserve);
@@ -1390,6 +1391,9 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
   activeTurns: counts,
   nativeTurns: counts,
   remainingMessages: counts,
+  totalMessages: counts,
+  processedMessages: counts,
+  inventoryComplete: { type: "boolean" },
   lastError: { type: "string" },
   jobs: {
     type: "object",
@@ -1431,6 +1435,21 @@ function memoryStatus(database, enabled) {
       status.publications = count("SELECT count(*) AS count FROM entities WHERE bucket='publications'");
       status.activeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='turns' AND json_extract(value,'$.outcome') IS NULL");
       status.nativeTurns = count("SELECT count(*) AS count FROM entities WHERE bucket='nativeActive'");
+      status.inventoryComplete = count(`SELECT count(*) AS count FROM entities s
+        WHERE s.bucket='sessions' AND json_extract(s.value,'$.disabled') IS NULL AND NOT EXISTS (
+          SELECT 1 FROM entities i WHERE i.bucket='messageInventory' AND i.id=s.id
+          AND json_extract(i.value,'$.generation')=json_extract(s.value,'$.generation'))`) === 0;
+      const inventory = db.query(`SELECT i.id AS session,json_extract(i.value,'$.generation') AS generation,
+          json_extract(m.value,'$.id') AS message,json_extract(m.value,'$.records') AS expected
+        FROM entities i JOIN entities s ON s.bucket='sessions' AND s.id=i.id,
+          json_each(i.value,'$.messages') m
+        WHERE i.bucket='messageInventory' AND json_extract(s.value,'$.disabled') IS NULL
+          AND json_extract(i.value,'$.generation')=json_extract(s.value,'$.generation')`).all();
+      const complete = db.query(`SELECT count(*) AS count FROM sources s WHERE s.session=? AND s.generation=?
+        AND substr(s.eventKey,1,instr(s.eventKey,':')-1)=? AND EXISTS (
+          SELECT 1 FROM nodes n WHERE n.tree=json_array('session',s.session,s.generation) AND n.start=s.seq AND n.count=1)`);
+      status.totalMessages = inventory.length;
+      status.processedMessages = inventory.filter((m) => complete.get(m.session, m.generation, m.message).count === m.expected).length;
       status.remainingMessages = count(`SELECT count(*) AS count FROM (
         SELECT DISTINCT s.session,s.generation,
           CASE WHEN instr(s.eventKey,':')>0 THEN substr(s.eventKey,1,instr(s.eventKey,':')-1) ELSE s.eventKey END AS message
@@ -2232,6 +2251,13 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         await prepareMemory();
       }
       const byId = new Map(raw.map((m) => [m.id, m]));
+      store.set("messageInventory", sessionID, {
+        generation: s.generation,
+        messages: raw.slice(0, raw.findLastIndex((m) => m.type === "idle") + 1).flatMap((m) => {
+          const records = extract(m).length;
+          return records ? [{ id: m.id, records }] : [];
+        })
+      });
       const changed = Object.entries(journal.seen).filter(([id, digest]) => !byId.has(id) || fingerprint(byId.get(id)) !== digest).map(([id]) => id);
       if (changed.length) {
         const records = engine.sources(sessionID, s.generation);
@@ -2592,4 +2618,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=B7F007EF789B3D5464756E2164756E21
+//# debugId=3AE31FF760B78F2664756E2164756E21

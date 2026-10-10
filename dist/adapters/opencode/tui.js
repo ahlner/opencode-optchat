@@ -30,6 +30,9 @@ var statusSchema = { type: "object", additionalProperties: false, properties: {
   activeTurns: counts,
   nativeTurns: counts,
   remainingMessages: counts,
+  totalMessages: counts,
+  processedMessages: counts,
+  inventoryComplete: { type: "boolean" },
   lastError: { type: "string" },
   jobs: {
     type: "object",
@@ -146,6 +149,12 @@ import { createSignal, onCleanup, onMount } from "solid-js";
 // src/adapters/opencode/tui-status-model.ts
 function statusIndicator(status) {
   const indicator = baseIndicator(status);
+  if (status.totalMessages !== undefined && status.processedMessages !== undefined && status.enabled) {
+    const mode = status.nativeTurns ? "N" : "M";
+    const state = status.jobs.failed || status.jobs.expired ? "!" : status.lastError === "BACKGROUND_PAUSED" ? "P" : "";
+    const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
+    return { text: `OC:${mode}${state} ${status.processedMessages}/${status.totalMessages}${status.inventoryComplete ? "" : "?"}m \xB7 ${jobs}j`, tone: indicator.tone };
+  }
   if (!status.enabled || status.remainingMessages === undefined)
     return indicator;
   const jobs = status.jobs.pending + status.jobs.running + status.jobs.failed;
@@ -270,4 +279,4 @@ export {
   tui_default as default
 };
 
-//# debugId=798A94479A8ACC3B64756E2164756E21
+//# debugId=39E495F52129D63D64756E2164756E21

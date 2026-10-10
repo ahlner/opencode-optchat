@@ -916,6 +916,7 @@ class Engine {
   retire(sessionId, mode, preserve = 0, retainPublications = true) {
     this.store.transaction(() => {
       const session = this.session(sessionId), scope = this.scope(session.scopeId);
+      this.store.remove("messageInventory", sessionId);
       const retiredSources = this.sources(sessionId, session.generation);
       insist(Number.isSafeInteger(preserve) && preserve >= 0 && preserve <= retiredSources.length && (mode !== "delete" || preserve === 0), "INVALID_BOUNDARY", "Invalid retirement prefix");
       const prefix = retiredSources.slice(0, preserve);
@@ -1311,4 +1312,4 @@ export {
   turnKey
 };
 
-//# debugId=5AE7F6105C2C5D9E64756E2164756E21
+//# debugId=28D1103D65A5AFCA64756E2164756E21

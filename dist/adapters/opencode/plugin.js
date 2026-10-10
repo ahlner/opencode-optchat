@@ -53,19 +53,20 @@ var sourceKey = (r) => key(r.sessionId, r.generation, r.seq);
 var turnKey = (t) => key(t.sessionId, t.generation, t.id);
 
 // src/compactor/summarizer.ts
-function validSummary(text, input) {
+function summaryRejection(text, input) {
   if (!text.trim() || bytes(text) > 512)
-    return false;
+    return "SUMMARY_SIZE";
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text))
-    return false;
+    return "CONTROL_CHARACTERS";
   if (/^(?:Need (?:a )?summary|(?:I|We) (?:need|must|will) (?:to )?(?:summarize|write|produce)|Let's (?:summarize|write)|(?:Analysis|Thinking|Draft|Notes|Reasoning):|The summary should|Final concise\b)/i.test(text.trim()) || /\bDraft:[\s\S]*\b(?:bytes maybe|Final concise|Need <=)/i.test(text))
-    return false;
+    return "DRAFTING_NOTES";
   if (/^No (?:requests?|proposals?|decisions?|failures?|open questions?)[\s\S]*\b(?:recorded|shown|noted)\.?$/i.test(text.trim()))
-    return false;
-  if (/tool_call/.test(input) && /no (?:recorded )?(?:result|output)s? (?:recorded|shown|included)|missing results?\b|result (?:not shown|unknown)/i.test(text))
-    return false;
-  return true;
+    return "ABSENT_CATEGORY_BOILERPLATE";
+  if (/tool_call/.test(input) && /no (?:recorded )?(?:(?:contents?\/)?results?|outputs?)(?: text)? (?:recorded|shown|included)|missing results?\b|result (?:not shown|unknown)/i.test(text))
+    return "TOOL_RESULT_ABSENCE";
 }
+var validSummary = (text, input) => summaryRejection(text, input) === undefined;
+var retryInstruction = "For TOOL_RESULT_ABSENCE, state only the recorded tool name, arguments, or verified result. Omit all claims that results are absent, missing, unknown, or not recorded. A separate result record is not a failure. For other errors, return finished factual evidence within 512 UTF-8 bytes, without drafting notes.";
 
 class FakeSummarizer {
   async summarize(input) {
@@ -100,8 +101,8 @@ ${measured}
 UNTRUSTED_JSON_DATA:
 ${JSON.stringify(input)}`, signal), signal)).trim();
       if (validSummary(text, input))
-        return { text, model: this.model, promptVersion: "optchat-4", fallback: false };
-      measured = `Previous response was rejected (${bytes(text)} UTF-8 bytes). Return only finished factual evidence within 512 bytes. Do not write drafting notes or infer absent tool results. Aim for at most ${Math.max(100, 280 - (attempt + 1) * 80)} bytes.`;
+        return { text, model: this.model, promptVersion: "optchat-5", fallback: false };
+      measured = `Previous response was rejected: ${summaryRejection(text, input)} (${bytes(text)} UTF-8 bytes). ${retryInstruction} Aim for at most ${Math.max(100, 280 - (attempt + 1) * 80)} bytes.`;
     }
     throw new Error("Compactor did not produce a nonempty summary within 512 UTF-8 bytes");
   }
@@ -122,12 +123,14 @@ ${JSON.stringify(input)}`, signal), signal)).trim();
         results[group[0].id] = await this.summarize(group[0].data, signal);
         continue;
       }
-      let accepted = false;
+      let accepted = false, feedback = "";
       for (let attempt = 0;attempt < this.retries; attempt++) {
         const raw = await abortable(() => this.generate(`${summaryInstruction}
 BATCH_CONTRACT: Return only a JSON array of {"id":number,"text":string}. Return each supplied id exactly once. Summarize each item independently. Never transfer evidence between items. Each text must be at most 512 UTF-8 bytes. No extra fields. Attempt ${attempt + 1}.
+${feedback}
 UNTRUSTED_JSON_DATA:
 ${JSON.stringify(group)}`, signal), signal);
+        feedback = `Previous response had invalid JSON, item IDs, or fields. Return exactly these IDs: ${group.map((g) => g.id).join(",")}. ${retryInstruction}`;
         let rows;
         try {
           rows = JSON.parse(raw);
@@ -137,10 +140,15 @@ ${JSON.stringify(group)}`, signal), signal);
         if (!Array.isArray(rows) || rows.length !== group.length)
           continue;
         const seen = new Set;
-        if (!rows.every((r) => r && typeof r === "object" && Object.keys(r).sort().join(",") === "id,text" && typeof r.text === "string" && group.some((g) => g.id === r.id && validSummary(r.text.trim(), g.data)) && !seen.has(r.id) && !!seen.add(r.id)))
+        if (!rows.every((r) => r && typeof r === "object" && Object.keys(r).sort().join(",") === "id,text" && typeof r.text === "string" && group.some((g) => g.id === r.id) && !seen.has(r.id) && !!seen.add(r.id)))
           continue;
+        const rejected = rows.map((r) => ({ id: r.id, reason: summaryRejection(r.text.trim(), group.find((g) => g.id === r.id).data) })).filter((r) => r.reason);
+        if (rejected.length) {
+          feedback = `Previous response was rejected for these items: ${JSON.stringify(rejected)}. ${retryInstruction} Return every expected ID, including corrected items.`;
+          continue;
+        }
         for (const row of rows)
-          results[row.id] = { text: row.text.trim(), model: this.model, promptVersion: "optchat-batch-1", fallback: false };
+          results[row.id] = { text: row.text.trim(), model: this.model, promptVersion: "optchat-batch-2", fallback: false };
         accepted = true;
         break;
       }
@@ -255,7 +263,11 @@ function evidenceInput(record) {
   return JSON.stringify({ kind: record.kind, payload });
 }
 var jobFailureCode = (error) => {
+  if (error instanceof MemoryError && /^[A-Z_]{1,64}$/.test(error.code))
+    return error.code;
   const text = String(error ?? "");
+  if (/SUMMARY_BATCH_INVALID/.test(text))
+    return "SUMMARY_BATCH_INVALID";
   return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
 var defaults = { high: 16000, low: 12000, chunkBytes: 1e4, leaseMs: 300000, broadcastSubagents: false, maxRunningJobs: Number.MAX_SAFE_INTEGER, parentBatchSize: 1, compactEvidence: false };
@@ -550,6 +562,11 @@ class Engine {
         const record = this.source(node.source);
         if (record.kind === "report")
           return evidenceInput(record);
+        if (record.kind === "tool_call") {
+          const projected = evidenceInput(record);
+          if (node.model === "lossless-local" || bytes(projected) <= 512)
+            return projected;
+        }
       }
       return node.text;
     }).join(`
@@ -662,6 +679,33 @@ class Engine {
   }
   retryFailed() {
     this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run();
+  }
+  recoverRejectedBatches(scopeId) {
+    return this.store.transaction(() => {
+      const marker = key("batch-recovery", scopeId, "feedback-2");
+      if (this.store.get("settings", marker))
+        return 0;
+      let count = 0;
+      const sessions = new Set;
+      for (const row of this.store.db.query("SELECT id,input FROM jobs WHERE status='failed' AND error LIKE 'MemoryError: SUMMARY_BATCH_INVALID:%'").all()) {
+        const input = JSON.parse(row.input);
+        if (input.type !== "parent")
+          continue;
+        const [type, sessionId] = JSON.parse(input.tree);
+        const session = this.store.get("sessions", sessionId);
+        if (type !== "session" || session?.scopeId !== scopeId || session.disabled || input.tree !== sessionTree(sessionId, session.generation))
+          continue;
+        this.store.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,error=NULL,ownerPid=NULL,ownerToken=NULL WHERE id=? AND status='failed'").run(row.id);
+        count++;
+        sessions.add(sessionId);
+      }
+      for (const id of sessions)
+        if (!this.preparationStatus(id).failed && this.store.get("adapterErrors", id)?.code === "COMPACTION_FAILED")
+          this.store.remove("adapterErrors", id);
+      if (count)
+        this.store.set("settings", marker, { recovered: count });
+      return count;
+    });
   }
   repairInvalidSummaries(scopeId) {
     return this.store.transaction(() => {
@@ -1796,6 +1840,9 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
   const repairedNodes = engine.repairInvalidSummaries(config.scopeId);
   if (repairedNodes)
     diagnostics.emit("summary.repaired", { count: repairedNodes });
+  const recoveredBatches = engine.recoverRejectedBatches(config.scopeId);
+  if (recoveredBatches)
+    diagnostics.emit("batch.recovered", { count: recoveredBatches });
   let tail = Promise.resolve(), stopped = false, operationSignal;
   let queued = 0, activeOperation, activePhase;
   let activeController, primaryPriority = 0;
@@ -2403,4 +2450,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=B3F89DB0A2D3F33264756E2164756E21
+//# debugId=F3A196DF058981A064756E2164756E21

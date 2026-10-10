@@ -20,7 +20,9 @@ export function evidenceInput(record: SourceRecord): string {
   return JSON.stringify({ kind: record.kind, payload });
 }
 const jobFailureCode = (error: unknown) => {
+  if (error instanceof MemoryError && /^[A-Z_]{1,64}$/.test(error.code)) return error.code;
   const text = String(error ?? "");
+  if (/SUMMARY_BATCH_INVALID/.test(text)) return "SUMMARY_BATCH_INVALID";
   return /LEASE_LOST/.test(text) ? "LEASE_LOST" : /512.*bytes|nonempty summary/i.test(text) ? "SUMMARY_SIZE" : /rate[ -]?limit|429/i.test(text) ? "RATE_LIMIT" : /unavailable|503/i.test(text) ? "PROVIDER_UNAVAILABLE" : /timeout|abort|deadline/i.test(text) ? "TIMEOUT" : "ERROR";
 };
 export interface EngineOptions { high: number; low: number; chunkBytes: number; leaseMs: number; broadcastSubagents: boolean; maxRunningJobs: number; parentBatchSize: number; compactEvidence: boolean; jobEvent?: (event: string, details: { jobId: string; kind: string; fence: number; leaseUntil: number; errorCode?: string; sourceId?: string; tree?: string; start?: number; count?: number; batchSize?: number }) => void }
@@ -234,6 +236,12 @@ export class Engine {
       if (this.options.compactEvidence && node.source) {
         const record = this.source(node.source);
         if (record.kind === "report") return evidenceInput(record);
+        // Older lossless call leaves still contain executed/status audit flags.
+        // Project those originals again without expanding a large summarized call.
+        if (record.kind === "tool_call") {
+          const projected = evidenceInput(record);
+          if (node.model === "lossless-local" || bytes(projected) <= 512) return projected;
+        }
       }
       return node.text;
     }).join("\n");
@@ -309,6 +317,25 @@ export class Engine {
     throw new Error("Job drain exceeded its bound");
   }
   retryFailed() { this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run(); }
+  recoverRejectedBatches(scopeId: string): number {
+    return this.store.transaction(() => {
+      const marker = key("batch-recovery", scopeId, "feedback-2");
+      if (this.store.get("settings", marker)) return 0;
+      let count = 0; const sessions = new Set<string>();
+      for (const row of this.store.db.query("SELECT id,input FROM jobs WHERE status='failed' AND error LIKE 'MemoryError: SUMMARY_BATCH_INVALID:%'").all() as { id: string; input: string }[]) {
+        const input = JSON.parse(row.input) as Job["input"];
+        if (input.type !== "parent") continue;
+        const [type, sessionId] = JSON.parse(input.tree);
+        const session = this.store.get<Session>("sessions", sessionId);
+        if (type !== "session" || session?.scopeId !== scopeId || session.disabled || input.tree !== sessionTree(sessionId, session.generation)) continue;
+        this.store.db.query("UPDATE jobs SET status='pending',fence=fence+1,leaseUntil=0,error=NULL,ownerPid=NULL,ownerToken=NULL WHERE id=? AND status='failed'").run(row.id);
+        count++; sessions.add(sessionId);
+      }
+      for (const id of sessions) if (!this.preparationStatus(id).failed && this.store.get<{ code: string }>("adapterErrors", id)?.code === "COMPACTION_FAILED") this.store.remove("adapterErrors", id);
+      if (count) this.store.set("settings", marker, { recovered: count });
+      return count;
+    });
+  }
   repairInvalidSummaries(scopeId: string): number {
     return this.store.transaction(() => {
       const nodes = (this.store.db.query("SELECT value FROM nodes").all() as { value: string }[]).map(r => JSON.parse(r.value) as Node);

@@ -71,6 +71,7 @@ export declare class Engine {
     workOne(signal?: AbortSignal): Promise<boolean>;
     drain(max?: number, signal?: AbortSignal): Promise<void>;
     retryFailed(): void;
+    recoverRejectedBatches(scopeId: string): number;
     repairInvalidSummaries(scopeId: string): number;
     markInherited(sessionId: string, id: string): void;
     projection(view: View, budget: number): Node[];

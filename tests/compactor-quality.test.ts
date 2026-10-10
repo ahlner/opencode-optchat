@@ -3,7 +3,7 @@ import { Engine, evidenceInput } from "../src/core/engine.ts";
 import { Store } from "../src/storage/store.ts";
 import { ModelSummarizer, FakeSummarizer, validSummary } from "../src/compactor/summarizer.ts";
 import { Retrieval } from "../src/core/retrieval.ts";
-import type { Node, SourceRecord, Publication } from "../src/core/types.ts";
+import { MemoryError, type Node, type SourceRecord, type Publication } from "../src/core/types.ts";
 
 const fact = "Verified evidence. ".repeat(16);
 function reply(prompt: string): string {
@@ -22,7 +22,7 @@ test("drafting notes and call-only absence claims require a finished retry", asy
   const responses = [draft, "No result shown", "Recorded tool call. Its result is a separate original."];
   let calls = 0;
   const result = await new ModelSummarizer(async () => { calls++; return responses.shift()!; }, "fixture").summarize('{"kind":"tool_call"}');
-  expect(calls).toBe(3); expect(result.promptVersion).toBe("optchat-4");
+  expect(calls).toBe(3); expect(result.promptVersion).toBe("optchat-5");
   await expect(new ModelSummarizer(async () => draft, "fixture").summarize("data")).rejects.toThrow("512 UTF-8 bytes");
 });
 
@@ -145,5 +145,48 @@ test("repair revokes bad derived evidence while preserving originals and unaffec
     expect(store.all("publications")).toHaveLength(2); expect(engine.sources("a", 0)).toEqual(originals);
     expect(engine.repairInvalidSummaries("scope")).toBe(0);
     expect((store.db.query("SELECT count(*) n FROM nodes WHERE value LIKE '%Need summary <=200%'").get() as { n: number }).n).toBe(0);
+  } finally { store.close(); }
+});
+
+test("batch retries explain the exact rejected items without accepting result-absence claims", async () => {
+  const prompts: string[] = [];
+  const model = new ModelSummarizer(async prompt => {
+    prompts.push(prompt);
+    return JSON.stringify([{ id: 0, text: prompts.length === 1 ? "Read completed; no result recorded." : "Requested a read of the API declarations." }, { id: 1, text: "Verified test output: 23 passed." }]);
+  }, "fixture");
+  const result = await model.summarizeBatch(['{"kind":"tool_call","name":"read"}', "Test output"]);
+  expect(prompts).toHaveLength(2);
+  expect(prompts[1]).toContain('"id":0,"reason":"TOOL_RESULT_ABSENCE"');
+  expect(result[0]!.text).not.toContain("no result");
+  expect(validSummary("No result text recorded.", "tool_call")).toBe(false);
+  expect(validSummary("No contents/result recorded.", "tool_call")).toBe(false);
+});
+
+test("legacy lossless call leaves are projected again and rejected batches recover only once", async () => {
+  const store = new Store(":memory:"); const prompts: string[] = [];
+  try {
+    const engine = new Engine(store, new ModelSummarizer(async p => { prompts.push(p); return "Requested a read of declarations."; }, "fixture"), { compactEvidence: true });
+    engine.register("a", "scope", "p"); engine.admit("a", "turn");
+    engine.append({ sessionId: "a", generation: 0, eventKey: "call", turnId: "turn", kind: "tool_call", timestamp: "2026-10-10T00:00:00Z", projectId: "p", payload: JSON.stringify({ name: "read", input: { path: "api.d.ts" }, executed: false, status: "completed" }) });
+    append(engine, "a", "turn", 1);
+    engine.finish("a", "turn", "completed");
+    await new Engine(store, new ModelSummarizer(async () => fact, "fixture", 12000, 3, true)).workOne();
+    await engine.workOne();
+    const job = store.claim(); expect(job?.input.type).toBe("parent");
+    store.fail(job!, new MemoryError("SUMMARY_BATCH_INVALID", "Invalid batch evidence"));
+    store.set("adapterErrors", "a", { code: "COMPACTION_FAILED" });
+    expect(engine.preparationStatus("a").failures[0]!.errorCode).toBe("SUMMARY_BATCH_INVALID");
+    const originals = engine.sources("a", 0);
+    expect(engine.recoverRejectedBatches("other-scope")).toBe(0);
+    expect(engine.recoverRejectedBatches("scope")).toBe(1);
+    expect(store.get("adapterErrors", "a")).toBeUndefined();
+    await engine.workOne();
+    const parentPrompt = prompts.at(-1)!;
+    expect(parentPrompt).toContain("Separate original tool_result");
+    expect(parentPrompt).not.toContain("executed");
+    expect(engine.sources("a", 0)).toEqual(originals);
+    store.db.query("UPDATE jobs SET status='failed',error=? WHERE id=?").run("MemoryError: SUMMARY_BATCH_INVALID: Still invalid", job!.id);
+    expect(engine.recoverRejectedBatches("scope")).toBe(0);
+    expect((store.db.query("SELECT status FROM jobs WHERE id=?").get(job!.id) as { status: string }).status).toBe("failed");
   } finally { store.close(); }
 });

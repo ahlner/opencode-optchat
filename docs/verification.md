@@ -672,3 +672,62 @@ This is one real-model trial, not a repeated benchmark or a test of the owner's 
 The final review also added a regression for evidence inherited from an earlier wider batch.
 That regression supplements the real trial. It does not establish general model fidelity.
 The owner's plugin remains disabled. No existing user configuration, session, service, credential, or memory database changed.
+
+## Result-absence rejection after the batch release
+
+The next authorized owner trace showed eight failed parent claims with `SUMMARY_BATCH_INVALID`.
+All three batch answers contained the expected IDs and valid byte sizes.
+Repeated unsupported result-absence statements caused rejection, not an ID mapping failure or a worker deadlock.
+No running claim remained after failure. Native input continued without memory tools.
+
+Older lossless call leaves still exposed execution audit fields to new parent summaries.
+Parent preparation now projects those retained calls again and removes the old audit flags.
+It does not expand large generated call summaries or modify original payloads.
+
+Retries now identify rejected item IDs and fixed rejection categories.
+They explain how to correct result-absence statements instead of repeating the unchanged batch prompt.
+The validator also rejects the observed variants with result text and combined contents/result wording.
+It never accepts an invalid summary merely to make the queue advance.
+
+Startup retries matching failed parent batches once per scope for this correction.
+The transaction increments fences and preserves originals, publication data, and unrelated failed jobs.
+It excludes disabled sessions and old generations. Repeated failure does not create an unlimited restart retry loop.
+Existing background pauses still require confirmed retry.
+
+Regression tests check corrected feedback, legacy lossless call projections, sanitized failure categories, and the one-time recovery limit.
+`bun run check` passed 103 tests with 11,989 assertions and TypeScript checks.
+The packed adapter passed 23 native lifecycle groups and 25 settings and recovery groups, with actual parent batches.
+The dependency audit passed for 428 installed package instances with no bundled third-party source.
+
+Private packed-plugin diagnostics remain in:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-An3qMY
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-integration-H4tR07
+```
+
+Two initial managed-service trials did not pass the unchanged original-citation check.
+Their cold native continuations passed, and their final numeric facts matched, but no original-source tool call completed.
+Captures showed a native-unavailable notice and missing memory tools in the supposedly prepared test turn.
+The test Location inherited another OptChat adapter while also loading its own fixture wrapper.
+The harness now disables the inherited `optchat.memory` ID only in its temporary project configuration.
+It keeps its differently named fixture wrapper and never changes global configuration.
+
+These failed trials remain in `optchat-real-host-VuQ0Ed` and `optchat-real-host-R07d5Q`.
+They are not passing semantic tests or evidence of the owner's batch failure recurring.
+
+With the inherited adapter disabled in the test Location, the next `openai/gpt-5.5-fast` trial passed the unchanged verifier.
+Its cold continuation completed in 393 milliseconds while preparation responses remained blocked.
+After preparation, the separate session used search and source tools and read the original tool result.
+Unknown numeric facts, error identifiers, outcomes, proposal state, citations, and transcript isolation all passed.
+The report observed six summary calls. This does not measure total provider cost or prove general semantic fidelity.
+
+Private reports remain in:
+
+```text
+/var/folders/jk/j_v56v3540gfn6l0gxk0rcg40000gn/T/optchat-real-host-JCv3hR
+```
+
+This trial used synthetic evidence in newly created sessions, not the owner's pending batch or original conversation data.
+Initial inherited adapters could observe those test sessions. The corrected harness excludes that extra adapter locally.
+No owner database, service, credentials, or global configuration received a direct manual edit.

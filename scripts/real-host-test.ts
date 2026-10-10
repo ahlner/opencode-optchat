@@ -52,7 +52,9 @@ export default Plugin.define({ id: "optchat.real-host-test", async setup(ctx) {
   await ctx.session.hook("context", event => log({ type: "primary", sessionId: event.sessionID, userMessages: event.messages.filter(m => m.role === "user").map(m => ({ id: m.id, content: m.content })), system: event.system.filter(p => p.type === "text").map(p => p.text), tools: Object.keys(event.tools) }));
   return cleanup;
 } });`);
-await Bun.write(join(root, "opencode.json"), JSON.stringify({ plugins: [{ package: join(root, "plugin"), options: { database, scopeId: `real-test:${nonce}`, compactorModel: model, waitMs: 120000 } }], agents: { optchat_live_test: { mode: "primary", steps: 12, description: "Bounded real-model memory test", system: "Answer only from test evidence. Distinguish proposals from implemented changes and failures from successes. Use available memory tools for exact originals. Do not access files, networks or other sessions. Final answers must be concise." } } }));
+// Disable an inherited OptChat adapter only in this temporary Location.
+// The fixture wrapper has a different plugin ID and owns its separate database.
+await Bun.write(join(root, "opencode.json"), JSON.stringify({ plugins: ["-optchat.memory", { package: join(root, "plugin"), options: { database, scopeId: `real-test:${nonce}`, compactorModel: model, waitMs: 120000 } }], agents: { optchat_live_test: { mode: "primary", steps: 12, description: "Bounded real-model memory test", system: "Answer only from test evidence. Distinguish proposals from implemented changes and failures from successes. Use available memory tools for exact originals. Do not access files, networks or other sessions. Final answers must be concise." } } }));
 const sessions: string[] = []; let db: Database | undefined;
 const wait = async (fn: () => Promise<boolean> | boolean, label: string) => { const deadline = Date.now() + 300000; while (Date.now() < deadline) { if (await fn()) return; await Bun.sleep(250); } throw new Error(`Timed out: ${label}`); };
 const context = async (id: string) => (await api("GET", `/api/session/${id}/context`)) as RawMessage[];

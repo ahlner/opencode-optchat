@@ -8,7 +8,8 @@ export interface Summarizer {
     summarize(input: string, signal?: AbortSignal): Promise<Summary>;
     summarizeBatch?(inputs: string[], signal?: AbortSignal, jobIds?: string[]): Promise<Summary[]>;
 }
-export declare function validSummary(text: string, input: string): boolean;
+export declare function summaryRejection(text: string, input: string): string | undefined;
+export declare const validSummary: (text: string, input: string) => boolean;
 export declare class FakeSummarizer implements Summarizer {
     summarize(input: string): Promise<Summary>;
 }

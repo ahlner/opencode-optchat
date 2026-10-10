@@ -126,6 +126,15 @@ Reconstruction can incur model costs. It does not overwrite summaries in place.
 
 Existing background pauses still require confirmed retry.
 
+Batch retries identify rejected item IDs and rejection categories before requesting corrected evidence.
+They do not accept unsupported result-absence statements to keep preparation moving.
+The adapter also projects older lossless tool-call leaves again, without changing their retained originals.
+This removes old execution audit flags from new parent inputs.
+
+The corrected adapter automatically retries existing `SUMMARY_BATCH_INVALID` parent failures once per database scope.
+It preserves claim fences and leaves other failed jobs unchanged.
+Repeated failures still require operator review or confirmed retry. An existing background pause remains in effect.
+
 The lease fix recovers an expired lease only when its fence remains unchanged.
 A worker that another worker or retention change replaced discards its result.
 It does not fail the replacement job or publish stale evidence.

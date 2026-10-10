@@ -143,8 +143,9 @@ ${JSON.stringify(input)}`, signal), signal)).trim();
       }
       let accepted = false, feedback = "";
       for (let attempt = 0;attempt < this.retries; attempt++) {
+        const target = [280, 180, 100][Math.min(attempt, 2)];
         const raw = await abortable(() => this.generate(`${summaryInstruction}
-BATCH_CONTRACT: Return only a JSON array of {"id":number,"text":string}. Return each supplied id exactly once. Summarize each item independently. Never transfer evidence between items. Each text must be at most 512 UTF-8 bytes. No extra fields. Attempt ${attempt + 1}.
+BATCH_CONTRACT: Return only a JSON array of {"id":number,"text":string}. Return each supplied id exactly once. Summarize each item independently. Never transfer evidence between items. Each text must be at most 512 UTF-8 bytes. Target ${target} UTF-8 bytes per text in this attempt. Keep only the most important supported facts. Omit repeated labels and bookkeeping. Do not enumerate every detail. No extra fields. Attempt ${attempt + 1}.
 ${feedback}
 UNTRUSTED_JSON_DATA:
 ${JSON.stringify(group)}`, signal), signal);
@@ -160,13 +161,13 @@ ${JSON.stringify(group)}`, signal), signal);
         const seen = new Set;
         if (!rows.every((r) => r && typeof r === "object" && Object.keys(r).sort().join(",") === "id,text" && typeof r.text === "string" && group.some((g) => g.id === r.id) && !seen.has(r.id) && !!seen.add(r.id)))
           continue;
-        const rejected = rows.map((r) => ({ id: r.id, reason: summaryRejection(r.text.trim(), group.find((g) => g.id === r.id).data) })).filter((r) => r.reason);
+        const rejected = rows.map((r) => ({ id: r.id, bytes: bytes(r.text.trim()), reason: summaryRejection(r.text.trim(), group.find((g) => g.id === r.id).data) })).filter((r) => r.reason);
         if (rejected.length) {
           feedback = `Previous response was rejected for these items: ${JSON.stringify(rejected)}. ${retryInstruction} Return every expected ID, including corrected items.`;
           continue;
         }
         for (const row of rows)
-          results[row.id] = { text: row.text.trim(), model: this.model, promptVersion: "optchat-batch-2", fallback: false };
+          results[row.id] = { text: row.text.trim(), model: this.model, promptVersion: "optchat-batch-3", fallback: false };
         accepted = true;
         break;
       }
@@ -738,7 +739,7 @@ class Engine {
     this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run();
   }
   recoverRejectedBatches(scopeId) {
-    return this.recoverFailed(scopeId, "batch-recovery", "feedback-2", (input, error) => input.type === "parent" && error.startsWith("MemoryError: SUMMARY_BATCH_INVALID:"));
+    return this.recoverFailed(scopeId, "batch-recovery", "byte-target-3", (input, error) => (input.type === "parent" || input.type === "leaf") && error.startsWith("MemoryError: SUMMARY_BATCH_INVALID:"));
   }
   recoverProviderFailures(scopeId) {
     return this.recoverFailed(scopeId, "provider-recovery", "temporary-1", (_input, error) => !/rate[ -]?limit|too many requests|\b429\b/i.test(error) && temporaryProviderError(error));
@@ -1310,4 +1311,4 @@ export {
   turnKey
 };
 
-//# debugId=0098F749B155F0E064756E2164756E21
+//# debugId=5AE7F6105C2C5D9E64756E2164756E21

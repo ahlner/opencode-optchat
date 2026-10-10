@@ -348,7 +348,7 @@ export class Engine {
   }
   retryFailed() { this.store.db.query("UPDATE jobs SET status='pending',error=NULL WHERE status='failed'").run(); }
   recoverRejectedBatches(scopeId: string): number {
-    return this.recoverFailed(scopeId, "batch-recovery", "feedback-2", (input, error) => input.type === "parent" && error.startsWith("MemoryError: SUMMARY_BATCH_INVALID:"));
+    return this.recoverFailed(scopeId, "batch-recovery", "byte-target-3", (input, error) => (input.type === "parent" || input.type === "leaf") && error.startsWith("MemoryError: SUMMARY_BATCH_INVALID:"));
   }
   recoverProviderFailures(scopeId: string): number {
     return this.recoverFailed(scopeId, "provider-recovery", "temporary-1", (_input, error) => !/rate[ -]?limit|too many requests|\b429\b/i.test(error) && temporaryProviderError(error));

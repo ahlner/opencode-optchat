@@ -50,15 +50,16 @@ export class ModelSummarizer implements Summarizer {
       if (group.length === 1) { results[group[0]!.id] = await this.summarize(group[0]!.data, signal); continue; }
       let accepted = false, feedback = "";
       for (let attempt = 0; attempt < this.retries; attempt++) {
-        const raw = await abortable(() => this.generate(`${summaryInstruction}\nBATCH_CONTRACT: Return only a JSON array of {"id":number,"text":string}. Return each supplied id exactly once. Summarize each item independently. Never transfer evidence between items. Each text must be at most 512 UTF-8 bytes. No extra fields. Attempt ${attempt + 1}.\n${feedback}\nUNTRUSTED_JSON_DATA:\n${JSON.stringify(group)}`, signal), signal);
+        const target = [280, 180, 100][Math.min(attempt, 2)]!;
+        const raw = await abortable(() => this.generate(`${summaryInstruction}\nBATCH_CONTRACT: Return only a JSON array of {"id":number,"text":string}. Return each supplied id exactly once. Summarize each item independently. Never transfer evidence between items. Each text must be at most 512 UTF-8 bytes. Target ${target} UTF-8 bytes per text in this attempt. Keep only the most important supported facts. Omit repeated labels and bookkeeping. Do not enumerate every detail. No extra fields. Attempt ${attempt + 1}.\n${feedback}\nUNTRUSTED_JSON_DATA:\n${JSON.stringify(group)}`, signal), signal);
         feedback = `Previous response had invalid JSON, item IDs, or fields. Return exactly these IDs: ${group.map(g => g.id).join(",")}. ${retryInstruction}`;
         let rows: unknown; try { rows = JSON.parse(raw); } catch { continue; }
         if (!Array.isArray(rows) || rows.length !== group.length) continue;
         const seen = new Set<number>();
         if (!rows.every(r => r && typeof r === "object" && Object.keys(r).sort().join(",") === "id,text" && typeof r.text === "string" && group.some(g => g.id === r.id) && !seen.has(r.id) && !!seen.add(r.id))) continue;
-        const rejected = rows.map(r => ({ id: r.id, reason: summaryRejection(r.text.trim(), group.find(g => g.id === r.id)!.data) })).filter(r => r.reason);
+        const rejected = rows.map(r => ({ id: r.id, bytes: bytes(r.text.trim()), reason: summaryRejection(r.text.trim(), group.find(g => g.id === r.id)!.data) })).filter(r => r.reason);
         if (rejected.length) { feedback = `Previous response was rejected for these items: ${JSON.stringify(rejected)}. ${retryInstruction} Return every expected ID, including corrected items.`; continue; }
-        for (const row of rows) results[row.id] = { text: row.text.trim(), model: this.model, promptVersion: "optchat-batch-2", fallback: false };
+        for (const row of rows) results[row.id] = { text: row.text.trim(), model: this.model, promptVersion: "optchat-batch-3", fallback: false };
         accepted = true; break;
       }
       insist(accepted, "SUMMARY_BATCH_INVALID", "Batch summary IDs, evidence format, or 512-byte limits were invalid");

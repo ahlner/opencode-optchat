@@ -6,6 +6,20 @@ import { Retrieval } from "../src/core/retrieval.ts";
 import { MemoryError, type Node, type SourceRecord, type Publication } from "../src/core/types.ts";
 
 const fact = "Verified evidence. ".repeat(16);
+test("batch size retries report measured bytes and reduce the requested text target", async () => {
+  const prompts: string[] = [];
+  const model = new ModelSummarizer(async prompt => {
+    prompts.push(prompt);
+    return JSON.stringify([{ id: 0, text: prompts.length < 3 ? "x".repeat(530) : "Recorded outcome." }, { id: 1, text: "Verified result." }]);
+  }, "fixture");
+  const results = await model.summarizeBatch(["first evidence", "second evidence"]);
+  expect(prompts[0]).toContain("Target 280 UTF-8 bytes");
+  expect(prompts[1]).toContain("Target 180 UTF-8 bytes");
+  expect(prompts[1]).toContain('"bytes":530');
+  expect(prompts[2]).toContain("Target 100 UTF-8 bytes");
+  expect(results[0]!.text).toBe("Recorded outcome.");
+  expect(results[0]!.promptVersion).toBe("optchat-batch-3");
+});
 test("stale parent dependencies are fenced and replaced without retrying missing node IDs", async () => {
   const store = new Store(":memory:");
   try {
@@ -191,7 +205,7 @@ test("batch retries explain the exact rejected items without accepting result-ab
   }, "fixture");
   const result = await model.summarizeBatch(['{"kind":"tool_call","name":"read"}', "Test output"]);
   expect(prompts).toHaveLength(2);
-  expect(prompts[1]).toContain('"id":0,"reason":"TOOL_RESULT_ABSENCE"');
+  expect(prompts[1]).toContain('"id":0,"bytes":35,"reason":"TOOL_RESULT_ABSENCE"');
   expect(result[0]!.text).not.toContain("no result");
   expect(validSummary("No result text recorded.", "tool_call")).toBe(false);
   expect(validSummary("No contents/result recorded.", "tool_call")).toBe(false);

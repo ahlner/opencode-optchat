@@ -775,6 +775,25 @@ The native terminal test passed six checks without model calls in `optchat-tui-S
 The dependency audit passed for 428 installed package instances, with no bundled third-party source.
 # Missing dependency recovery
 
+## Subsequent batch size failure
+
+At 11:25 UTC, the updated owner runtime repaired six obsolete dependencies.
+At 11:31 UTC, a different parent batch failed after three responses exceeded the 512-byte text limit.
+The captured responses measured 522 bytes, then 540 and 535 bytes, then 530 and 517 bytes for rejected items.
+The decoder correctly rejected those texts, but the retry instructions did not reduce the target length.
+
+Batch revision `optchat-batch-3` reports measured lengths and requests targets of 280, 180, and 100 UTF-8 bytes across three attempts.
+The 512-byte acceptance limit remains unchanged. The implementation never clips text.
+Startup schedules matching retained batch failures once for this revision, including leaf batches.
+It excludes missing dependencies and does not clear operator pauses.
+This improves correction instructions but cannot guarantee that a provider returns a valid summary.
+
+The updated checks passed 114 tests with 12,074 assertions and TypeScript validation.
+The packed plugin passed 23 lifecycle groups and 25 settings and recovery groups.
+Private host diagnostics are in `optchat-integration-JXUH62` and `optchat-integration-FDIP7y` under the temporary directory.
+
+## Dependency diagnosis
+
 The owner reported `OptChat: native · failed` after the leaf batching update.
 The metadata log recorded `NOT_FOUND` for a parent job before any model request.
 A private consistent database backup confirmed one missing child ID and an existing replacement at the same coordinates.

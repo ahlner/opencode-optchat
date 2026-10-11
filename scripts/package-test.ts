@@ -32,14 +32,14 @@ try {
   }
   assert(!(await Bun.file(join(packageDir, "node_modules/@opencode/plugin/package.json")).exists()));
   assert(!(await Bun.file(join(packageDir, "src/index.ts")).exists()), "The package must not depend on unshipped TypeScript source");
-  await mkdir(join(root, "node_modules"));
+  await mkdir(join(root, "node_modules/@ahlner"), { recursive: true });
   // Resolve only the already installed, pinned build dependencies. No network install.
   await symlink(join(repository, "node_modules/@opencode"), join(root, "node_modules/@opencode"));
   await symlink(join(repository, "node_modules/@types"), join(root, "node_modules/@types"));
-  await symlink(packageDir, join(root, "node_modules/opencode-optchat"));
-   await Bun.write(join(root, "consumer.ts"), `import { Store, Engine, type Snapshot } from "opencode-optchat/core";
-import plugin from "opencode-optchat";
-import explicitPlugin from "opencode-optchat/plugin";
+  await symlink(packageDir, join(root, "node_modules/@ahlner/opencode-optchat"));
+   await Bun.write(join(root, "consumer.ts"), `import { Store, Engine, type Snapshot } from "@ahlner/opencode-optchat/core";
+import plugin from "@ahlner/opencode-optchat";
+import explicitPlugin from "@ahlner/opencode-optchat/plugin";
 const store = new Store(); const engine = new Engine(store); engine.register("package", "test", "stable");
 const snapshot: Snapshot = engine.admit("package", "turn").snapshot;
 if (snapshot.sessionId !== "package" || !plugin.setup || plugin !== explicitPlugin) throw new Error("Broken package exports"); store.close();`);

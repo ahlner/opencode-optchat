@@ -390,8 +390,8 @@ Use `test:integration` to check a local server build.
 Use `test:tui` to check the local terminal build through an isolated fixture package.
 Local directory loading can differ from Git package loading in the pinned host.
 The default package export is the OpenCode plugin.
-Import the standalone memory engine from `opencode-optchat/core`.
-The `opencode-optchat/plugin` entry remains available.
+Import the standalone memory engine from `@ahlner/opencode-optchat/core`.
+The `@ahlner/opencode-optchat/plugin` entry remains available.
 
 `test:git` installs the public Git revision in an isolated host with a fresh cache.
 Set `OPTCHAT_GIT_PACKAGE` to test another Git revision.

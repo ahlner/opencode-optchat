@@ -262,7 +262,7 @@ The test sessions remain available for diagnosis.
 ## Git distribution preparation
 
 The package now exports the OpenCode plugin by default.
-The standalone engine uses `opencode-optchat/core`.
+The standalone engine uses `@ahlner/opencode-optchat/core`.
 Git retains the compiled JavaScript and declarations. Installation does not require a build hook.
 `bun run check:dist` rebuilt those files without changes.
 

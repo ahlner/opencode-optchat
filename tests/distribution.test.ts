@@ -4,7 +4,7 @@ test("Git package exports a compiled plugin and a separate core without install 
   const metadata = await Bun.file("package.json").json();
   const { default: plugin } = await import(`../${metadata.exports["."].default}`);
   const { Engine, Store } = await import(`../${metadata.exports["./core"].default}`);
-  expect(metadata.private).toBe(true);
+  expect(metadata.private).toBeUndefined();
   expect(metadata.exports["."].default).toBe("./dist/adapters/opencode/plugin.js");
   expect(metadata.exports["./core"].default).toBe("./dist/index.js");
   expect(metadata.exports["./plugin"]).toEqual(metadata.exports["."]);

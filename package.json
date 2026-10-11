@@ -11,7 +11,6 @@
   "bugs": {
     "url": "https://github.com/ahlner/opencode-optchat/issues"
   },
-  "private": true,
   "type": "module",
   "exports": {
     ".": {

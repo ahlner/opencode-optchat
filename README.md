@@ -7,18 +7,29 @@ The adapter shares summaries of completed, failed, and interrupted turns within 
 **Tests use Bun 1.4.2 and OpenCode 2.0.26. The adapter supports OpenCode 2.0.x and rejects other host versions.**
 These tests do not certify production use or guarantee correct model answers.
 
-## Installation from Git
+## Installation
 
-OpenCode installs this plugin directly from GitHub.
-You do not need an npm account, a local clone, a build command, or a wrapper package.
+Install the plugin from npm. You do not need a local clone or a build command.
+The npm package includes the compiled plugin and its type declarations.
+The plugin starts inactive. Installation alone does not retain conversations or call a model.
+
+### Install from npm
+
+```sh
+opencode plugin add @ahlner/opencode-optchat
+```
+
+### Install from Git
+
+OpenCode can also install this plugin directly from GitHub.
 The repository includes the compiled plugin and its type declarations.
-Dependencies can still require package-registry downloads. This project does not publish to npmjs.com.
-
-### CLI installation and TUI settings
+Dependencies can still require package-registry downloads.
 
 ```sh
 opencode plugin add github:ahlner/opencode-optchat#main
 ```
+
+### Settings
 
 1. Open your project in OpenCode 2.0.x.
 2. Open the command palette with `Ctrl+P`.

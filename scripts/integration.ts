@@ -314,10 +314,13 @@ try {
        const paused = await settingsCall("status"); assert(paused.jobs.pending > 0); assert.equal(paused.jobs.running, 0); assert.equal(paused.jobs.failed, 0);
        const pausedRequestCount = requests.length;
        await Bun.sleep(1200); assert.equal(requests.length, pausedRequestCount, "A paused worker does not send further model requests");
-       proc.kill("SIGKILL"); await proc.exited; proc = start(); await ready();
-       assert.equal((await settingsCall("status")).lastError, "BACKGROUND_PAUSED", "A service restart preserves the pause");
+       proc.kill("SIGKILL"); await proc.exited; proc = start(); await ready(); await settingsCall("status");
+       await until(() => requests.length > pausedRequestCount, "A transient pause resumes automatic preparation after restart without a prompt");
+       await until(async () => (await settingsCall("status")).lastError === "BACKGROUND_PAUSED", "Three further stalls persist the pause again", 30000);
+       assert.equal((await settingsCall("status")).jobs.running, 0, "A renewed pause leaves no running worker");
        await api("PATCH", `/api/session/${a.id}`, { permissions: [] });
-       await Bun.sleep(1200); assert.equal(requests.length, pausedRequestCount, "A native permission event cannot bypass the pause");
+       const renewedRequestCount = requests.length;
+       await Bun.sleep(1200); assert.equal(requests.length, renewedRequestCount, "A native permission event cannot bypass the pause");
        assert.equal((db!.query("SELECT count(*) AS n FROM entities WHERE bucket='sessions' AND json_extract(value,'$.disabled') IS NOT NULL").get() as { n: number }).n, 0, "A pause never disables sessions or retires their originals");
        holdSummaries = false; for (const release of heldSummaries) release(); heldSummaries.clear();
        assert.equal((await settingsCall("retry")).originals, paused.originals, "Confirmed retry clears the pause without removing originals");
@@ -338,7 +341,7 @@ try {
        assert(contentRows.some(row => row.event === "compactor.response"), "Opt-in capture includes visible model answers");
        assert(contentText.includes("UNTRUSTED_JSON_DATA"), "Opt-in capture includes actual model prompts");
        for (const row of contentRows.filter(row => row.event === "compactor.response")) assert(capturedRequests.get(row.requestId)?.jobId === row.jobId, "Answers correlate with their request and job");
-          console.log(JSON.stringify({ root, batchedParents: true, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "native input during slow preparation", "cancelled claims and available settings", "native input with failed memory dependencies", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "pause survives restart and native events", "confirmed automatic recovery without data loss", "cold native compaction preserves originals", "cold compacted fork retains original checkpoint"], modelRequests: requests.length }, null, 2));
+          console.log(JSON.stringify({ root, batchedParents: true, checks: ["inactive installation", "server-side defaults", "model selection", "activation", "context injection", "source retrieval", "crash recovery", "persistent settings", "disable without deletion", "budget change", "memory status", "safe retry RPC", "native input during slow preparation", "cancelled claims and available settings", "native input with failed memory dependencies", "failed prefix recovery", "admission resumes without retirement", "native request recovers seeded legacy global metadata", "automatic preparation without another host event", "dead worker resumes without another prompt", "bounded background stall pause", "transient pause resumes after restart", "renewed pause blocks native events", "confirmed automatic recovery without data loss", "cold native compaction preserves originals", "cold compacted fork retains original checkpoint"], modelRequests: requests.length }, null, 2));
   } else {
   const interrupted = await create();
   await api("POST", `/api/session/${interrupted.id}/prompt`, { text: "INTERRUPT_CURRENT: begin an attempt." });

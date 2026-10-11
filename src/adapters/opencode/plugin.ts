@@ -411,7 +411,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       }
       catch (error) { lastRecoveryError = error instanceof MemoryError ? error.code : "HOST_UNAVAILABLE"; diagnostics.emit("recovery.error", { errorCode: lastRecoveryError }); throw error; }
     }, signal, "background.recovery"),
-    pause: errorCode => { lastRecoveryError = errorCode; store.set("settings", "backgroundRecovery", { paused: true }); diagnostics.emit("recovery.paused", { attempt: 3 }); },
+    pause: errorCode => { lastRecoveryError = errorCode; store.set("settings", "backgroundRecovery", { paused: true, pauseReason: errorCode }); diagnostics.emit("recovery.paused", { attempt: 3 }); },
     completed: madeProgress => {
       const attempts = store.transaction(() => {
         if (madeProgress) { store.remove("settings", "backgroundRecovery"); return 0; }

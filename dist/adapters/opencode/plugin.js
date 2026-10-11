@@ -2739,7 +2739,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     }, signal, "background.recovery"),
     pause: (errorCode) => {
       lastRecoveryError = errorCode;
-      store.set("settings", "backgroundRecovery", { paused: true });
+      store.set("settings", "backgroundRecovery", { paused: true, pauseReason: errorCode });
       diagnostics.emit("recovery.paused", { attempt: 3 });
     },
     completed: (madeProgress) => {
@@ -2980,4 +2980,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=610683DF86E9B4DE64756E2164756E21
+//# debugId=B0B42FBA985E9FA064756E2164756E21

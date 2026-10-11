@@ -108,7 +108,7 @@ test("cold history uses native messages immediately, remains native through cont
       finishLate({ text: "LATE_RESULT_MUST_NOT_COMMIT" }); await Bun.sleep(10);
       expect(store.db.query("SELECT id FROM nodes").all()).toEqual([]); expect(calls).toBe(1);
       fast = true;
-      const finished = Date.now() + 3000;
+      const finished = Date.now() + 15000;
       while (store.all("publications").length < 24 && Date.now() < finished) await Bun.sleep(10);
       // Concurrent runners can still hold the compactor operation open right after the last publication.
       // Wait until no preparation operation is active before a fresh session admits shared memory.

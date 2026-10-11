@@ -72,7 +72,7 @@ export function memoryStatus(database: string, enabled: boolean): MemoryStatus {
         ORDER BY retryAt LIMIT 1`).get(Date.now(), Date.now()) as { retryAt: number; attempt: number } | null;
       if (enabled && retry) { status.retryInSeconds = Math.max(0, Math.ceil((retry.retryAt - Date.now()) / 1000)); status.retryAttempt = retry.attempt; }
       const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get() as { code: string } | null;
-      if (error) status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
+      if (error) status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE", "LOCATION_GONE"].includes(error.code) ? error.code : "MEMORY_ERROR";
       const paused = count("SELECT count(*) AS count FROM entities WHERE bucket='settings' AND id='backgroundRecovery' AND json_extract(value,'$.paused')=1");
       if (status.lastError === "BACKGROUND_PAUSED" && !paused) delete status.lastError;
       if (status.jobs.pending && paused) status.lastError = "BACKGROUND_PAUSED";

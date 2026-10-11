@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin";
 import type { Context as PluginContext } from "@opencode/plugin/promise/plugin";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { Engine, Store, Retrieval, ModelSummarizer, FakeSummarizer, assembleContext, MemoryError, insist, key, hash, sessionTree, type Session, type Turn } from "../../index.ts";
 import { extract, fingerprint, contentFingerprint, liveSuffix, retainedMessage, type RawMessage } from "./transcript.ts";
@@ -206,6 +207,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     const legacyScopeDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed): MemoryError: SCOPE_MISMATCH: Session cannot silently change scope$/;
     // Native discovery can replace global metadata without changing the derived trust scope.
     const nativeDirectory = info.location?.directory, canonical = ctx.location?.project?.canonical;
+    // A deleted host Location cannot verify its agent policy. Report it instead of stalling recovery.
+    if (nativeDirectory && !existsSync(nativeDirectory)) throw new MemoryError("LOCATION_GONE", "The host location no longer exists");
     const legacyDirectoryMatch = nativeDirectory && (sameDirectory(nativeDirectory, canonical) ||
       sameDirectory(nativeDirectory, ctx.location?.directory));
     if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined &&
@@ -378,8 +381,8 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       try { await reconcile(s.id as Parameters<typeof reconcile>[0], undefined, prepare, verifyOnly); }
       catch (error) {
         reconciliationFailure(s.id, `Reconciliation failed: ${String(error)}`, error);
-        // Never continue with a view pinned before an uncertain retention change.
-        throw error;
+        // A session whose host location vanished cannot recover here. Disable it and continue with the remaining sessions.
+        if (!(error instanceof MemoryError && error.code === "LOCATION_GONE")) throw error;
       }
     }
   };

@@ -2,6 +2,7 @@
 // src/adapters/opencode/plugin.ts
 import { Plugin } from "@opencode/plugin";
 import { mkdir } from "fs/promises";
+import { existsSync as existsSync3 } from "fs";
 import { dirname, isAbsolute as isAbsolute2 } from "path";
 
 // src/core/abort.ts
@@ -1684,7 +1685,7 @@ function memoryStatus(database, enabled) {
       }
       const error = db.query("SELECT json_extract(value,'$.code') AS code FROM entities WHERE bucket='adapterErrors' ORDER BY json_extract(value,'$.timestamp') DESC LIMIT 1").get();
       if (error)
-        status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE"].includes(error.code) ? error.code : "MEMORY_ERROR";
+        status.lastError = ["COMPACTION_FAILED", "MEMORY_NOT_READY", "MEMORY_STALLED", "HOST_UNAVAILABLE", "BACKGROUND_PAUSED", "REVERT_PENDING", "TURN_ACTIVE", "LOCATION_GONE"].includes(error.code) ? error.code : "MEMORY_ERROR";
       const paused = count("SELECT count(*) AS count FROM entities WHERE bucket='settings' AND id='backgroundRecovery' AND json_extract(value,'$.paused')=1");
       if (status.lastError === "BACKGROUND_PAUSED" && !paused)
         delete status.lastError;
@@ -2458,6 +2459,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       const projectId = config.projectId ?? info.projectID;
       const legacyScopeDisable = /^(?:Reconciliation failed|Agent policy reconciliation failed|Lifecycle reconciliation failed): MemoryError: SCOPE_MISMATCH: Session cannot silently change scope$/;
       const nativeDirectory = info.location?.directory, canonical = ctx.location?.project?.canonical;
+      if (nativeDirectory && !existsSync3(nativeDirectory))
+        throw new MemoryError("LOCATION_GONE", "The host location no longer exists");
       const legacyDirectoryMatch = nativeDirectory && (sameDirectory(nativeDirectory, canonical) || sameDirectory(nativeDirectory, ctx.location?.directory));
       if (existing?.projectId === "global" && projectId !== "global" && config.projectId === undefined && existing.scopeId === scopeId && sameDirectory(nativeDirectory, ctx.location?.directory) && ctx.location?.project?.id === projectId && legacyDirectoryMatch && (!existing.disabled || legacyScopeDisable.test(existing.disabled))) {
         store.transaction(() => {
@@ -2686,7 +2689,8 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
           await reconcile(s.id, undefined, prepare, verifyOnly);
         } catch (error) {
           reconciliationFailure(s.id, `Reconciliation failed: ${String(error)}`, error);
-          throw error;
+          if (!(error instanceof MemoryError && error.code === "LOCATION_GONE"))
+            throw error;
         }
       }
   };
@@ -2976,4 +2980,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=C5952340FC12813864756E2164756E21
+//# debugId=610683DF86E9B4DE64756E2164756E21

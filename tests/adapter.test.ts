@@ -376,6 +376,43 @@ test("native shutdown errors retain originals and only their exact legacy disabl
   } finally { await cleanup?.(); store.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test("a session whose host location vanished is disabled without stalling recovery of other sessions", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-location-gone-")), database = join(root, "memory.sqlite");
+  const store = new Store(database), engine = new Engine(store);
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    const past = { id: "past", type: "user", time: { created: 1 }, text: "SURVIVING_ORIGINAL" }, record = extract(past)[0]!;
+    const scopeId = automaticScope("stable", root);
+    engine.register("gone", scopeId, "stable"); engine.register("staying", scopeId, "stable");
+    engine.admit("staying", "past");
+    engine.append({ sessionId: "staying", generation: 0, projectId: "stable", eventKey: record.key, turnId: "past", kind: record.kind, timestamp: record.timestamp, payload: record.payload });
+    engine.finish("staying", "past", "completed");
+    store.set("sessions", "gone", { ...engine.session("gone"), projectId: "vanished" });
+    const goneDirectory = join(root, "deleted-location");
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root, project: { id: "stable", canonical: root } }, options: { database, fakeSummarizer: true },
+        session: { hook: async () => {},
+          get: async ({ sessionID }: any) => sessionID === "gone" ? { projectID: "vanished", location: { directory: goneDirectory }, agent: "build", permissions: [] }
+            : { projectID: "stable", location: { directory: root }, agent: "build", permissions: [] },
+          context: async () => [past, { id: "idle-past", type: "idle", time: { created: 2 }, outcome: "succeeded" }, { id: "current", type: "user", time: { created: 3 }, text: "CURRENT" }] },
+        agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 32000, output: 1024 } }] }) },
+        tool: { transform: async (callback: any) => callback({ add() {} }) }, event: { subscribe: async function* () {} },
+      } as any) as typeof cleanup;
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !store.get<any>("sessions", "gone").disabled) await Bun.sleep(20);
+      expect(store.get<any>("sessions", "gone").disabled).toContain("LOCATION_GONE");
+      expect(store.get("adapterErrors", "gone")).toBeUndefined();
+      const published = Date.now() + 5000;
+      while (Date.now() < published && !store.all("publications").length) await Bun.sleep(20);
+      expect(engine.sources("staying", 0)).toHaveLength(1);
+      expect(store.all("publications")).toHaveLength(1);
+      expect(store.get("adapterErrors", "staying")).toBeUndefined();
+      expect(store.get<{ paused?: boolean }>("settings", "backgroundRecovery")?.paused).toBeFalsy();
+    } finally { await cleanup?.(); }
+  } finally { store.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("global project discovery preserves its verified location scope and rejects cross-location migration", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-project-discovery-"));
   try {

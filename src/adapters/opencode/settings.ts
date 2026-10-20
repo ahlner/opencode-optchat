@@ -9,7 +9,7 @@ import { adoptMemory, memoryCandidates, memoryRoot } from "./adoption.ts";
 import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
 export async function setupSettings(ctx: Context, start: (ctx: Context) => Promise<Cleanup | void> | Cleanup | void) {
-  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
+  insist(/^2\.(?:0|1)\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x and 2.1.x only");
   // Legacy programmatic contexts do not provide the settings transport.
   if (!ctx.rpc || !ctx.storage) return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;

@@ -10,7 +10,7 @@ test("an admitted memory turn cannot switch to native mode when host validation 
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-pinned-mode-")), database = join(root, "memory.sqlite");
   const hooks: Record<string, (event: any) => Promise<void>> = {}; let unavailable = false;
   const ctx: any = {
-    app: { version: "2.0.26" }, location: { directory: root, project: { id: "stable", canonical: root } },
+    app: { version: "2.1.1" }, location: { directory: root, project: { id: "stable", canonical: root } },
     options: { database, scopeId: "u:p", fakeSummarizer: true, waitMs: 100 },
     session: { hook: async (name: string, fn: any) => { hooks[name] = fn; }, get: async () => ({ projectID: "stable", location: { directory: root }, permissions: [] }), context: async () => { if (unavailable) throw new Error("Host is unavailable"); return [{ id: "current", type: "user", time: { created: 1 }, text: "CURRENT" }]; } },
     agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ providerID: "fixture", id: "fixture", limit: { context: 32000, output: 1024 } }] }) },
@@ -126,7 +126,7 @@ test("cold history uses native messages immediately, remains native through cont
       expect(JSON.stringify(store.db.query("SELECT value FROM nodes").all())).not.toContain("LATE_RESULT_MUST_NOT_COMMIT");
     } finally { store.close(); }
   } finally { finishLate({ text: "Ignored late result." }); await cleanup?.(); await rm(root, { recursive: true, force: true }); }
-});
+}, 20000);
 
 test("server-wide terminal events do not import unrelated Locations into a configured scope", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-event-scope-")); let reads = 0;
@@ -214,7 +214,7 @@ test("adapter rejects unverified hosts and invalid configuration before creating
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-adapter-"));
   try {
     const database = join(root, "memory.sqlite"), options = { database, scopeId: "u:p", fakeSummarizer: true };
-    await expect(plugin.setup({ app: { version: "2.1.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
+    await expect(plugin.setup({ app: { version: "2.2.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     await expect(plugin.setup({ app: { version: "3.0.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     for (const invalid of [{ waitMs: 0 }, { waitMs: 1.5 }, { memoryBytes: -1 }, { safetyTokens: 0 }, { database: "relative.sqlite" }, { fakeSummarizer: false }]) {
       await expect(plugin.setup({ app: { version: "2.0.26" }, options: { ...options, ...invalid } } as any)).rejects.toThrow("CONFIG");

@@ -17,7 +17,7 @@ export async function documentationFiles(root = "."): Promise<string[]> {
     }
     return files.sort();
   }
-  return ["README.md", "AGENTS.md", "THIRD_PARTY_NOTICES.md", ...await walk("docs")];
+  return ["README.md", "AGENTS.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md", ...await walk("docs")];
 }
 
 export async function checkArchivedPaper(root = "."): Promise<boolean> {

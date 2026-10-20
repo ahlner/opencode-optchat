@@ -1,13 +1,13 @@
 {
-  "reviewDate": "2026-10-09",
-  "lockfileSha256": "7102ef7cecd61e981c82bfe8ea6e8bab02f77c6ff87ae7cb7855bf85b682f78c",
+  "reviewDate": "2026-10-20",
+  "lockfileSha256": "37df3f95433988ba1955866f0cdc93c13f644c98f930a95fe8f42bb0dec9c14d",
   "scope": "Installed package metadata and root notice files. The review excludes uninstalled platform-specific artifacts. This inventory is not a legal certification.",
-  "packageInstances": 428,
+  "packageInstances": 434,
   "licenseCounts": {
     "Apache-2.0": 72,
-    "MIT": 213,
-    "ISC": 86,
-    "BlueOak-1.0.0": 46,
+    "MIT": 221,
+    "ISC": 85,
+    "BlueOak-1.0.0": 45,
     "BSD-3-Clause": 2,
     "CC-BY-4.0": 1,
     "BSD-2-Clause": 4,
@@ -688,7 +688,7 @@
     },
     {
       "name": "@effect/opentelemetry",
-      "version": "4.0.0-rc.112",
+      "version": "4.0.1",
       "path": "node_modules/@effect/opentelemetry",
       "declaredLicense": "MIT",
       "notices": [
@@ -699,8 +699,20 @@
       ]
     },
     {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@effect/opentelemetry/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
       "name": "@effect/platform-node",
-      "version": "4.0.0-rc.112",
+      "version": "4.0.1",
       "path": "node_modules/@effect/platform-node",
       "declaredLicense": "MIT",
       "notices": [
@@ -712,8 +724,32 @@
     },
     {
       "name": "@effect/platform-node-shared",
-      "version": "4.0.0-rc.112",
+      "version": "4.0.1",
       "path": "node_modules/@effect/platform-node-shared",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@effect/platform-node-shared/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@effect/platform-node/node_modules/effect",
       "declaredLicense": "MIT",
       "notices": [
         {
@@ -879,9 +915,9 @@
       ]
     },
     {
-      "name": "@msgpackr-extract/msgpackr-extract-darwin-arm64",
+      "name": "@msgpackr-extract/msgpackr-extract-linux-x64",
       "version": "3.0.4",
-      "path": "node_modules/@msgpackr-extract/msgpackr-extract-darwin-arm64",
+      "path": "node_modules/@msgpackr-extract/msgpackr-extract-linux-x64",
       "declaredLicense": "MIT",
       "notices": []
     },
@@ -1314,52 +1350,112 @@
     },
     {
       "name": "@opencode/ai",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/ai",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@opencode/ai/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
       "name": "@opencode/client",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/client",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/plugin",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/plugin",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@opencode/plugin/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
       "name": "@opencode/protocol",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/protocol",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@opencode/protocol/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
       "name": "@opencode/schema",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/schema",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@opencode/schema/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
+    },
+    {
       "name": "@opencode/theme",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/theme",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/util",
-      "version": "2.0.26",
+      "version": "2.1.1",
       "path": "node_modules/@opencode/util",
       "declaredLicense": "MIT",
       "notices": []
+    },
+    {
+      "name": "effect",
+      "version": "4.0.1",
+      "path": "node_modules/@opencode/util/node_modules/effect",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30"
+        }
+      ]
     },
     {
       "name": "glob",
@@ -1567,7 +1663,7 @@
     },
     {
       "name": "@opentui/core",
-      "version": "0.5.17",
+      "version": "0.6.6",
       "path": "node_modules/@opentui/core",
       "declaredLicense": "MIT",
       "notices": [
@@ -1578,9 +1674,41 @@
       ]
     },
     {
-      "name": "@opentui/core-darwin-arm64",
-      "version": "0.5.17",
-      "path": "node_modules/@opentui/core-darwin-arm64",
+      "name": "@opentui/core-linux-x64",
+      "version": "0.6.6",
+      "path": "node_modules/@opentui/core-linux-x64",
+      "declaredLicense": "MIT",
+      "notices": [
+        {
+          "file": "LICENSE",
+          "sha256": "d9c397a5dc5ac77a2a08fc967ea06a65317a4b5b8de48f6f732ffcb21737e3d2"
+        },
+        {
+          "file": "LICENSE-GHOSTTY",
+          "sha256": "e3c017838d3f532f52fc2361ffd5528fd0d7dc158ea34e0f169d40185845c920"
+        },
+        {
+          "file": "LICENSE-LCMS2",
+          "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31"
+        },
+        {
+          "file": "LICENSE-LIBWEBP",
+          "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
+        },
+        {
+          "file": "LICENSE-STB",
+          "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
+        },
+        {
+          "file": "LICENSE-WUFFS",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        }
+      ]
+    },
+    {
+      "name": "@opentui/core-linux-x64-musl",
+      "version": "0.6.6",
+      "path": "node_modules/@opentui/core-linux-x64-musl",
       "declaredLicense": "MIT",
       "notices": [
         {
@@ -1611,7 +1739,7 @@
     },
     {
       "name": "@opentui/solid",
-      "version": "0.5.17",
+      "version": "0.6.6",
       "path": "node_modules/@opentui/solid",
       "declaredLicense": "MIT",
       "notices": [
@@ -1940,9 +2068,9 @@
       ]
     },
     {
-      "name": "@typescript/typescript-darwin-arm64",
+      "name": "@typescript/typescript-linux-x64",
       "version": "7.0.2",
-      "path": "node_modules/@typescript/typescript-darwin-arm64",
+      "path": "node_modules/@typescript/typescript-linux-x64",
       "declaredLicense": "Apache-2.0",
       "notices": [
         {
@@ -2506,7 +2634,7 @@
     },
     {
       "name": "effect",
-      "version": "4.0.0-rc.112",
+      "version": "4.0.1",
       "path": "node_modules/effect",
       "declaredLicense": "MIT",
       "notices": [
@@ -3597,18 +3725,6 @@
       ]
     },
     {
-      "name": "msgpackr-extract",
-      "version": "3.0.4",
-      "path": "node_modules/msgpackr-extract",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d00470775464c789c7ac04cfba3bf1b79ef149790eb72556d1c51d8f50c8e7f3"
-        }
-      ]
-    },
-    {
       "name": "negotiator",
       "version": "1.1.0",
       "path": "node_modules/negotiator",
@@ -4312,30 +4428,6 @@
       ]
     },
     {
-      "name": "path-scurry",
-      "version": "1.11.1",
-      "path": "node_modules/rimraf/node_modules/glob/node_modules/path-scurry",
-      "declaredLicense": "BlueOak-1.0.0",
-      "notices": [
-        {
-          "file": "LICENSE.md",
-          "sha256": "8a1af140fdfbf5afd3df27f7e662f989c5b963a300020dfafce42033cae9e004"
-        }
-      ]
-    },
-    {
-      "name": "lru-cache",
-      "version": "10.4.3",
-      "path": "node_modules/rimraf/node_modules/glob/node_modules/path-scurry/node_modules/lru-cache",
-      "declaredLicense": "ISC",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "451ec07eeb9c4e1b86de9abdaa426462a8be48f887ec7421cf0bbb9c769555ab"
-        }
-      ]
-    },
-    {
       "name": "run-applescript",
       "version": "7.1.0",
       "path": "node_modules/run-applescript",
@@ -4505,7 +4597,7 @@
     },
     {
       "name": "solid-js",
-      "version": "1.9.15",
+      "version": "1.9.12",
       "path": "node_modules/solid-js",
       "declaredLicense": "MIT",
       "notices": [
@@ -4639,7 +4731,7 @@
     },
     {
       "name": "strip-ansi",
-      "version": "7.1.2",
+      "version": "7.2.0",
       "path": "node_modules/strip-ansi",
       "declaredLicense": "MIT",
       "notices": [

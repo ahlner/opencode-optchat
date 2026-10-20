@@ -2,13 +2,18 @@
 
 ## Tested environment
 
-- macOS arm64.
+- macOS arm64 for OpenCode 2.0.26.
+- Linux x64 for OpenCode 2.0.26 and 2.1.1.
 - Bun 1.4.2.
-- OpenCode 2.0.x. The tested patch is 2.0.26.
+- OpenCode 2.0.x and 2.1.x. The tested patches are 2.0.26 and 2.1.1.
 - Official V2 plugin API and the exact pinned `@opencode/plugin` dependency.
 - Private OpenCode service processes with a local OpenAI-compatible model fixture.
 
 The adapter rejects other OpenCode versions explicitly.
+The private 2.1.1 host integration covers local plugin lifecycle cases in this matrix.
+Git package installation has separate evidence from an earlier host test.
+The optional terminal peer accepts OpenCode 2.0's `@opentui/solid` 0.5.17.
+The pinned OpenCode 2.1.1 plugin requires `@opentui/solid` 0.6.6 or later.
 The tests do not establish support for other operating systems or providers.
 
 ## Support matrix

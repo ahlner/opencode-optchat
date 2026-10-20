@@ -28,6 +28,7 @@ test("documentation check separates lists and code fence types", () => {
 
 test("documentation discovery checks nested prose and preserves the archived paper", async () => {
   const files = await documentationFiles();
+  expect(files).toContain("CHANGELOG.md");
   expect(files).toContain("docs/paper/README.md");
   expect(files).not.toContain(archivedPaper.path);
   expect(await checkArchivedPaper()).toBe(true);

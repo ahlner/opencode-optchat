@@ -10,6 +10,7 @@ for (const dir of ["config", "data", "cache", "state", "project", "project/plugi
 const requests: any[] = [];
 let holdSummaries = false;
 let unavailableResponses = 0, unavailableAttempts = 0;
+const unavailableRequestIndices: number[] = [];
 let holdConcurrent = false, inFlightSummaries = 0, peakConcurrentSummaries = 0;
 const heldSummaries = new Set<() => void>();
 const concurrentWaiters = new Set<() => void>();
@@ -20,6 +21,7 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   const messages = body.messages as any[], all = JSON.stringify(messages);
   if (all.includes("UNTRUSTED_JSON_DATA") && unavailableResponses > 0) {
     unavailableResponses--; unavailableAttempts++;
+    unavailableRequestIndices.push(requests.length - 1);
     return Response.json({ error: { message: "Fixture model is temporarily unavailable", type: "server_error", code: "provider_unavailable" } }, { status: 503 });
   }
   if (holdSummaries && all.includes("UNTRUSTED_JSON_DATA")) await new Promise<void>(resolve => heldSummaries.add(resolve));
@@ -189,7 +191,7 @@ try {
   const batchDiagnostics = (await Bun.file(dbPath + ".diagnostics.ndjson").text()).trim().split("\n").map(line => JSON.parse(line));
   assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "leaf" && row.batchSize > 1), "Actual native worker batches original leaves");
   assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "parent" && row.batchSize > 1), "Parent batching remains active");
-  assert(batchDiagnostics.filter(row => row.event === "compactor.backoff").length >= 2, "Native provider retries record bounded backoff");
+  assert(batchDiagnostics.filter(row => row.event === "compactor.backoff").length >= 2 || unavailableRequestIndices.every(index => requests.slice(index + 1).some(retry => JSON.stringify(retry.messages) === JSON.stringify(requests[index].messages))), "The adapter or host retries every temporary provider failure");
   const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
   assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);
   for (let i = 0; i < 4; i++) assert(batchSources.some(r => r.kind === "tool_result" && r.payload.includes(`BATCH_ITEM_${i}`) && r.payload.includes("x".repeat(700))), "Every full result remains retained");

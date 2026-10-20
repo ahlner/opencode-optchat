@@ -36,7 +36,7 @@ entries.sort((a, b) => a.path.localeCompare(b.path));
 const counts: Record<string, number> = {};
 for (const entry of entries) counts[entry.declaredLicense] = (counts[entry.declaredLicense] ?? 0) + 1;
 const inventory = JSON.stringify({
-  reviewDate: "2026-10-09", lockfileSha256: sha256(await Bun.file("bun.lock").text()),
+  reviewDate: "2026-10-20", lockfileSha256: sha256(await Bun.file("bun.lock").text()),
   scope: "Installed package metadata and root notice files. The review excludes uninstalled platform-specific artifacts. This inventory is not a legal certification.",
   packageInstances: entries.length, licenseCounts: counts, packages: entries,
 }, null, 2) + "\n";

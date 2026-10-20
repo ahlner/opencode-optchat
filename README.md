@@ -4,7 +4,7 @@ OptChat uses Bun to manage memory across OpenCode sessions.
 Each session retains its own original records.
 The adapter shares summaries of completed, failed, and interrupted turns within the configured scope.
 
-**Tests use Bun 1.4.2 and OpenCode 2.1.1. The adapter supports OpenCode 2.0.x and 2.1.x and rejects other host versions.**
+**Tests use Bun 1.4.2, Bun 1.4.3, and OpenCode 2.1.1. The adapter supports OpenCode 2.0.x and 2.1.x and rejects other host versions.**
 These tests do not certify production use or guarantee correct model answers.
 
 ## Installation

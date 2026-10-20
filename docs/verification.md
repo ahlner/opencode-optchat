@@ -833,6 +833,7 @@ The 2.1.x host retries provider calls inside the generate request.
 The adapter therefore sees the recovered result instead of the first failure.
 The adapter keeps its own bounded retry for errors that the host surfaces.
 The deterministic tests cover that retry with its delays and its attempt limit.
+The integration test checks the adapter retry on a 2.0.x host and the host retry on a 2.1.x host.
 
 The private host integration passed 23 lifecycle groups with 129 loopback requests.
 The packed package passed the lifecycle integration with 127 requests and the settings integration with 96 requests.

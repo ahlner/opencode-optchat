@@ -60,7 +60,7 @@ test("cancelled chunk work preserves durable progress and cannot release another
   } finally { finishLate?.({ text: "Ignored.", model: "fixture", promptVersion: "fixture", fallback: false }); store.close(); }
 });
 
-// The preparation loop waits for its own 15s deadline, so the test needs more than the default 5s budget.
+// The preparation loop waits for its own 15s deadline. The default 5s budget is too short.
 test("cold history uses native messages immediately, remains native through continuations, and prepares independently", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-cold-cancel-"));
   const database = join(root, "memory.sqlite"), hooks: Record<string, any> = {};

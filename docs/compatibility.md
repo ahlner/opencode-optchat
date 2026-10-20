@@ -44,7 +44,7 @@ The tests do not establish support for other operating systems or providers.
 | Automatic preparation continuation | Timer resumes a released job without another native prompt or event. Failed jobs require confirmed retry |
 | Cold existing-session input | Native mode preserves own history while summaries remain unavailable. Admission does not generate summaries |
 | Compactor leaf and parent batches | Checked item IDs, bounded input, independent size limits, cancellation, retention fences, and actual host requests |
-| Temporary provider outages | Bounded adapter retries and backoff. The host retries provider calls inside the generate request since 2.1.x. Actual HTTP 503 recovery passes without manual retry |
+| Temporary provider outages | Bounded adapter retries and backoff on a 2.0.x host. The 2.1.x host retries provider calls inside the generate request. Actual HTTP 503 recovery passes without manual retry |
 | Invalid cached summaries | Derived-memory reconstruction retains originals and unaffected publication order |
 
 Support applies only to the checked V2 boundaries.

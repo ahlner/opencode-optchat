@@ -134,6 +134,8 @@ let db: Database | undefined;
 const publications = () => (db!.query("SELECT value FROM entities WHERE bucket='publications'").all() as { value: string }[]).map(r => JSON.parse(r.value));
 try {
   await ready();
+  const hostVersion = (await api("GET", "/api/info")).version as string;
+  const hostRetriesProviderCalls = /^2\.1\./.test(hostVersion);
   const create = () => api("POST", "/api/session", { location: { directory: join(root, "project") }, model: { providerID: "fixture", id: "fixture" }, permissions: [{ action: "*", resource: "*", effect: "allow" }] });
    const a = await create();
    const settingsCall = async (method: string, input: unknown = {}) => (await api("POST", `/api/rpc/optchat.settings/${method}?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`, { input })).output;
@@ -189,8 +191,8 @@ try {
   const batchDiagnostics = (await Bun.file(dbPath + ".diagnostics.ndjson").text()).trim().split("\n").map(line => JSON.parse(line));
   assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "leaf" && row.batchSize > 1), "Actual native worker batches original leaves");
   assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "parent" && row.batchSize > 1), "Parent batching remains active");
-  // The host retries provider calls inside the generate request since 2.1.x. The adapter sees the final result.
-  assert.equal(batchDiagnostics.filter(row => row.event === "compactor.failed").length, 0, "The provider outage never reaches the adapter as a failure");
+  if (hostRetriesProviderCalls) assert.equal(batchDiagnostics.filter(row => row.event === "compactor.failed").length, 0, "The 2.1.x host retries the provider call, so the outage never reaches the adapter");
+  else assert(batchDiagnostics.filter(row => row.event === "compactor.backoff").length >= 2, "The 2.0.x host surfaces the outage, so the adapter records bounded backoff");
   assert(batchDiagnostics.some(row => row.event === "compactor.received"), "The compactor receives a summary after the provider outage");
   const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
   assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);

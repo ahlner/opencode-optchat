@@ -60,6 +60,7 @@ test("cancelled chunk work preserves durable progress and cannot release another
   } finally { finishLate?.({ text: "Ignored.", model: "fixture", promptVersion: "fixture", fallback: false }); store.close(); }
 });
 
+// The preparation loop waits for its own 15s deadline, so the test needs more than the default 5s budget.
 test("cold history uses native messages immediately, remains native through continuations, and prepares independently", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-cold-cancel-"));
   const database = join(root, "memory.sqlite"), hooks: Record<string, any> = {};
@@ -126,7 +127,7 @@ test("cold history uses native messages immediately, remains native through cont
       expect(JSON.stringify(store.db.query("SELECT value FROM nodes").all())).not.toContain("LATE_RESULT_MUST_NOT_COMMIT");
     } finally { store.close(); }
   } finally { finishLate({ text: "Ignored late result." }); await cleanup?.(); await rm(root, { recursive: true, force: true }); }
-});
+}, 30000);
 
 test("server-wide terminal events do not import unrelated Locations into a configured scope", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-event-scope-")); let reads = 0;
@@ -214,7 +215,7 @@ test("adapter rejects unverified hosts and invalid configuration before creating
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-adapter-"));
   try {
     const database = join(root, "memory.sqlite"), options = { database, scopeId: "u:p", fakeSummarizer: true };
-    await expect(plugin.setup({ app: { version: "2.1.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
+    await expect(plugin.setup({ app: { version: "2.2.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     await expect(plugin.setup({ app: { version: "3.0.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     for (const invalid of [{ waitMs: 0 }, { waitMs: 1.5 }, { memoryBytes: -1 }, { safetyTokens: 0 }, { database: "relative.sqlite" }, { fakeSummarizer: false }]) {
       await expect(plugin.setup({ app: { version: "2.0.26" }, options: { ...options, ...invalid } } as any)).rejects.toThrow("CONFIG");

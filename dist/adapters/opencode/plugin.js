@@ -1731,6 +1731,12 @@ function sameDirectory(left, right) {
   }
 }
 
+// src/adapters/opencode/host-version.ts
+var supportedHost = /^2\.(?:0|1)\.\d+$/;
+function insistSupportedHost(version) {
+  insist(supportedHost.test(version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x and 2.1.x only");
+}
+
 // src/adapters/opencode/adoption.ts
 import { Database as Database3 } from "bun:sqlite";
 import { existsSync as existsSync2, readdirSync, rmSync, statSync } from "fs";
@@ -1797,7 +1803,7 @@ function adoptMemory(sourceDatabase, targetDatabase, targetScopeId) {
 
 // src/adapters/opencode/settings.ts
 async function setupSettings(ctx, start) {
-  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
+  insistSupportedHost(ctx.app.version);
   if (!ctx.rpc || !ctx.storage)
     return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;
@@ -2233,7 +2239,7 @@ function createRecoveryLoop(options) {
 
 // src/adapters/opencode/plugin.ts
 var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
-  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
+  insistSupportedHost(ctx.app.version);
   const config = ctx.options;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);
@@ -2980,4 +2986,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=B0B42FBA985E9FA064756E2164756E21
+//# debugId=C5397E54E099BB0D64756E2164756E21

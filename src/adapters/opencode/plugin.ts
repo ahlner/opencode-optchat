@@ -11,6 +11,7 @@ import { compactorRequest } from "./compactor-request.ts";
 import { abortable } from "../../core/abort.ts";
 import { Diagnostics, diagnosticCode } from "./diagnostics.ts";
 import { automaticScope, sameDirectory } from "./settings-scope.ts";
+import { insistSupportedHost } from "./host-version.ts";
 import { createRecoveryLoop } from "./recovery-loop.ts";
 import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
@@ -18,7 +19,7 @@ interface Config { database: string; projectId?: string; compactorModel?: { prov
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
-  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
+  insistSupportedHost(ctx.app.version);
   const config = ctx.options as unknown as Config;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);

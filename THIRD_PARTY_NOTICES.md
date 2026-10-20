@@ -17,15 +17,15 @@ This license does not replace licenses for dependencies, external documents, run
   The archive also includes it. The supplied document has no explicit license.
   Inclusion does not establish a separate MIT grant for the paper or its external sources.
 - [OpenCode V2 documentation](https://opencode.ai/v2/docs/build/plugins) and
-  installed `@opencode/plugin` 2.0.26 declarations were API references.
+  installed `@opencode/plugin` 2.1.1 declarations were API references.
   This package does not include their complete text or SDK implementation.
 
 ## Dependencies
 
 | Direct dependency | Version | Declared license | Distribution |
 | --- | --- | --- | --- |
-| `@opencode/plugin` | 2.0.26 | MIT | External runtime dependency |
-| `@opencode/theme` | 2.0.26 | MIT | Development only |
+| `@opencode/plugin` | 2.1.1 | MIT | External runtime dependency |
+| `@opencode/theme` | 2.1.1 | MIT | Development only |
 | `@opentui/core` | 0.5.17 | MIT | Development only |
 | `@opentui/solid` | 0.5.17 | MIT | Development dependency and external host-provided peer |
 | `solid-js` | 1.9.15 | MIT | Development dependency and external host-provided peer |

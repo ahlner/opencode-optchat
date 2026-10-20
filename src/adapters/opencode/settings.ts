@@ -5,11 +5,12 @@ import { Store, insist, type Turn } from "../../index.ts";
 import { SettingsRpc, type Settings } from "./settings-rpc.ts";
 import { memoryStatus, retryMemoryJobs } from "./settings-status.ts";
 import { automaticScope } from "./settings-scope.ts";
+import { insistSupportedHost } from "./host-version.ts";
 import { adoptMemory, memoryCandidates, memoryRoot } from "./adoption.ts";
 import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
 export async function setupSettings(ctx: Context, start: (ctx: Context) => Promise<Cleanup | void> | Cleanup | void) {
-  insist(/^2\.0\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x only");
+  insistSupportedHost(ctx.app.version);
   // Legacy programmatic contexts do not provide the settings transport.
   if (!ctx.rpc || !ctx.storage) return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;

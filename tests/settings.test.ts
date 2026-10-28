@@ -80,7 +80,7 @@ test("the settings path accepts the supported OpenCode host versions and rejects
     const supported = await setupSettings({ ...f.context, app: { version: "2.1.0" } }, f.start);
     try { expect(f.counts().starts).toBe(2); }
     finally { await supported?.(); }
-    await expect(setupSettings({ ...f.context, app: { version: "2.2.0" } }, f.start)).rejects.toThrow("UNSUPPORTED_HOST");
+    await expect(setupSettings({ ...f.context, app: { version: "2.3.0" } }, f.start)).rejects.toThrow("UNSUPPORTED_HOST");
   } finally { await f.cleanup?.(); await rm(f.root, { recursive: true, force: true }); }
 });
 

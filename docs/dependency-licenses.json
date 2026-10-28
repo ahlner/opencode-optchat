@@ -1,11 +1,11 @@
 {
   "reviewDate": "2026-10-09",
-  "lockfileSha256": "e4e9fb56f4a006d1b4d3efe21ce7b6f7a1f7827f7188cff8ec9e60d3def8f117",
+  "lockfileSha256": "0abc85778f6ca611a0db4be0e46d7844d24c539e2f363a9fd87199134cd0428a",
   "scope": "Installed package metadata and root notice files. The review excludes uninstalled platform-specific artifacts. This inventory is not a legal certification.",
-  "packageInstances": 430,
+  "packageInstances": 424,
   "licenseCounts": {
     "Apache-2.0": 72,
-    "MIT": 217,
+    "MIT": 211,
     "ISC": 85,
     "BlueOak-1.0.0": 45,
     "BSD-3-Clause": 2,
@@ -771,18 +771,6 @@
       ]
     },
     {
-      "name": "strip-ansi",
-      "version": "7.2.0",
-      "path": "node_modules/@isaacs/cliui/node_modules/strip-ansi",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "license",
-          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
-        }
-      ]
-    },
-    {
       "name": "@isaacs/fs-minipass",
       "version": "4.0.1",
       "path": "node_modules/@isaacs/fs-minipass",
@@ -1314,125 +1302,49 @@
     },
     {
       "name": "@opencode/ai",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/ai",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/client",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/client",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/plugin",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/plugin",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/protocol",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/protocol",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/schema",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/schema",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
       "name": "@opencode/theme",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/theme",
       "declaredLicense": "MIT",
       "notices": []
     },
     {
-      "name": "@opentui/core",
-      "version": "0.6.6",
-      "path": "node_modules/@opencode/theme/node_modules/@opentui/core",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d9c397a5dc5ac77a2a08fc967ea06a65317a4b5b8de48f6f732ffcb21737e3d2"
-        }
-      ]
-    },
-    {
-      "name": "@opentui/core-linux-x64",
-      "version": "0.6.6",
-      "path": "node_modules/@opencode/theme/node_modules/@opentui/core/node_modules/@opentui/core-linux-x64",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d9c397a5dc5ac77a2a08fc967ea06a65317a4b5b8de48f6f732ffcb21737e3d2"
-        },
-        {
-          "file": "LICENSE-GHOSTTY",
-          "sha256": "e3c017838d3f532f52fc2361ffd5528fd0d7dc158ea34e0f169d40185845c920"
-        },
-        {
-          "file": "LICENSE-LCMS2",
-          "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31"
-        },
-        {
-          "file": "LICENSE-LIBWEBP",
-          "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
-        },
-        {
-          "file": "LICENSE-STB",
-          "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
-        },
-        {
-          "file": "LICENSE-WUFFS",
-          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
-        }
-      ]
-    },
-    {
-      "name": "@opentui/core-linux-x64-musl",
-      "version": "0.6.6",
-      "path": "node_modules/@opencode/theme/node_modules/@opentui/core/node_modules/@opentui/core-linux-x64-musl",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d9c397a5dc5ac77a2a08fc967ea06a65317a4b5b8de48f6f732ffcb21737e3d2"
-        },
-        {
-          "file": "LICENSE-GHOSTTY",
-          "sha256": "e3c017838d3f532f52fc2361ffd5528fd0d7dc158ea34e0f169d40185845c920"
-        },
-        {
-          "file": "LICENSE-LCMS2",
-          "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31"
-        },
-        {
-          "file": "LICENSE-LIBWEBP",
-          "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
-        },
-        {
-          "file": "LICENSE-STB",
-          "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
-        },
-        {
-          "file": "LICENSE-WUFFS",
-          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
-        }
-      ]
-    },
-    {
       "name": "@opencode/util",
-      "version": "2.1.1",
+      "version": "2.2.0",
       "path": "node_modules/@opencode/util",
       "declaredLicense": "MIT",
       "notices": []
@@ -1643,7 +1555,7 @@
     },
     {
       "name": "@opentui/core",
-      "version": "0.5.17",
+      "version": "0.7.0",
       "path": "node_modules/@opentui/core",
       "declaredLicense": "MIT",
       "notices": [
@@ -1655,7 +1567,7 @@
     },
     {
       "name": "@opentui/core-linux-x64",
-      "version": "0.5.17",
+      "version": "0.7.0",
       "path": "node_modules/@opentui/core-linux-x64",
       "declaredLicense": "MIT",
       "notices": [
@@ -1719,7 +1631,7 @@
     },
     {
       "name": "@opentui/solid",
-      "version": "0.5.17",
+      "version": "0.7.0",
       "path": "node_modules/@opentui/solid",
       "declaredLicense": "MIT",
       "notices": [
@@ -2013,7 +1925,7 @@
     },
     {
       "name": "@types/bun",
-      "version": "1.4.2",
+      "version": "1.4.3",
       "path": "node_modules/@types/bun",
       "declaredLicense": "MIT",
       "notices": [
@@ -2293,7 +2205,7 @@
     },
     {
       "name": "bun-types",
-      "version": "1.4.2",
+      "version": "1.4.3",
       "path": "node_modules/bun-types",
       "declaredLicense": "MIT",
       "notices": []
@@ -4712,18 +4624,6 @@
     {
       "name": "strip-ansi",
       "version": "7.2.0",
-      "path": "node_modules/string-width/node_modules/strip-ansi",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "license",
-          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
-        }
-      ]
-    },
-    {
-      "name": "strip-ansi",
-      "version": "7.1.2",
       "path": "node_modules/strip-ansi",
       "declaredLicense": "MIT",
       "notices": [
@@ -5082,18 +4982,6 @@
         {
           "file": "LICENSE-MIT.txt",
           "sha256": "483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a"
-        }
-      ]
-    },
-    {
-      "name": "strip-ansi",
-      "version": "7.2.0",
-      "path": "node_modules/wrap-ansi/node_modules/strip-ansi",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "license",
-          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
         }
       ]
     },

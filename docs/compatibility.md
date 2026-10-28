@@ -3,9 +3,9 @@
 ## Tested environment
 
 - macOS arm64.
-- Linux x64 for the OpenCode 2.1.1 host check.
-- Bun 1.4.2 and 1.4.3.
-- OpenCode 2.0.x and 2.1.x. The tested patches are 2.0.26 and 2.1.1.
+- Linux x64 for the OpenCode 2.1.1 and 2.2.0 host checks.
+- Bun 1.4.2, 1.4.3, and 1.4.4.
+- OpenCode 2.0.x, 2.1.x, and 2.2.x. The tested patches are 2.0.26, 2.1.1, and 2.2.0.
 - Official V2 plugin API and the exact pinned `@opencode/plugin` dependency.
 - Private OpenCode service processes with a local OpenAI-compatible model fixture.
 
@@ -44,7 +44,7 @@ The tests do not establish support for other operating systems or providers.
 | Automatic preparation continuation | Timer resumes a released job without another native prompt or event. Failed jobs require confirmed retry |
 | Cold existing-session input | Native mode preserves own history while summaries remain unavailable. Admission does not generate summaries |
 | Compactor leaf and parent batches | Checked item IDs, bounded input, independent size limits, cancellation, retention fences, and actual host requests |
-| Temporary provider outages | Bounded adapter retries and backoff on a 2.0.x host. The 2.1.x host retries provider calls inside the generate request. Actual HTTP 503 recovery passes without manual retry |
+| Temporary provider outages | Bounded adapter retries and backoff on a 2.0.x host. The 2.1.x and 2.2.x hosts retry provider calls inside the generate request. Actual HTTP 503 recovery passes without manual retry |
 | Invalid cached summaries | Derived-memory reconstruction retains originals and unaffected publication order |
 
 Support applies only to the checked V2 boundaries.

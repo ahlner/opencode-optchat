@@ -215,7 +215,7 @@ test("adapter rejects unverified hosts and invalid configuration before creating
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-adapter-"));
   try {
     const database = join(root, "memory.sqlite"), options = { database, scopeId: "u:p", fakeSummarizer: true };
-    await expect(plugin.setup({ app: { version: "2.2.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
+    await expect(plugin.setup({ app: { version: "2.3.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     await expect(plugin.setup({ app: { version: "3.0.0" }, options } as any)).rejects.toThrow("UNSUPPORTED_HOST");
     for (const invalid of [{ waitMs: 0 }, { waitMs: 1.5 }, { memoryBytes: -1 }, { safetyTokens: 0 }, { database: "relative.sqlite" }, { fakeSummarizer: false }]) {
       await expect(plugin.setup({ app: { version: "2.0.26" }, options: { ...options, ...invalid } } as any)).rejects.toThrow("CONFIG");

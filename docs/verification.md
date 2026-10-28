@@ -841,3 +841,35 @@ The two actual provider HTTP 503 responses still recovered without manual retry.
 The private service, the loopback fixture, and the temporary database stayed isolated.
 The deterministic suite passed 131 tests with 12,181 assertions.
 The TypeScript and documentation checks passed.
+
+## OpenCode 2.2 host support
+
+The adapter rejected the OpenCode 2.2 host with `UNSUPPORTED_HOST`.
+The host version check allowed only the 2.0.x and 2.1.x series.
+
+The plugin API comparison between `@opencode/plugin` 2.1.1 and 2.2.0 showed no removed hook.
+The stateless generation call moved from `ctx.generate.text` to `ctx.experimental.generate.text`.
+The old member remains in 2.2.0 as a deprecated alias.
+The adapter calls `ctx.experimental.generate.text` and keeps `ctx.generate.text` as the fallback for a 2.0.x or 2.1.x host.
+Every consumed event name still exists in the 2.2.0 host.
+
+The event subscription gained typed filtering.
+The adapter passes a signal only, so the change is source compatible.
+The declarations moved `DeepMutable` to `effect` and the message types to `@opencode/ai/effect`.
+Neither import affects the consumed surface.
+
+The adapter now accepts the 2.0.x, 2.1.x, and 2.2.x host versions.
+It rejects every other host version before it creates a database.
+The pinned `@opencode/plugin` and `@opencode/theme` dependencies moved to 2.2.0.
+The terminal peers `@opentui/core` and `@opentui/solid` moved to 0.7.0.
+
+The 2.2.x host keeps the provider retries inside the generate request.
+The integration test failed its first run, because it selected the adapter retry path on a 2.2.0 host.
+The same run recovered both actual provider HTTP 503 responses without manual retry.
+The integration now selects the host retry path for 2.1.x and newer hosts.
+
+The private host integration passed 23 lifecycle groups with 130 loopback requests on OpenCode 2.2.0.
+The packed package passed its public export, TypeScript consumer, and private host settings integration with 97 loopback requests.
+The deterministic suite passed 131 tests with 12,183 assertions.
+The TypeScript and documentation checks passed.
+The TUI dialog test did not run. Its terminal fixture requires macOS, and the check host is Linux.

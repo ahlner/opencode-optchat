@@ -68,7 +68,7 @@ It does not replace native tool permissions or external organization policy engi
 | M5: model compactor and lifecycle | Compactor, lease renewal, checkpoints, forks, partial retention, children, permissions, and worktrees implemented |
 | M6: installation, support matrix, and evaluation | JavaScript, types, local archive, package consumer, and host integration complete. Repeated real benchmarks require authorization |
 
-The project did not publish to a public registry.
+GitHub release 0.1.4 exists. Its npm package awaits staged publication approval.
 A paid evaluation requires explicit authorization for its endpoint.
 The evaluation harness passed tests with a loopback model.
 That fixture does not establish semantic quality.
@@ -115,5 +115,8 @@ For each new lifecycle feature:
 A model quality claim requires repeated real runs, controlled fixtures, and manual outcome review.
 Fixture success alone is not sufficient.
 
-The macOS terminal fixture on OpenCode 2.2.1 did not display the OptChat status indicator.
-The native terminal dialog remains unverified. Private settings RPC checks remain separate.
+The earlier macOS terminal fixture did not recognize the OptChat status indicator.
+Terminal updates can separate visible words from their spaces.
+The corrected fixture ignores whitespace when checking displayed text.
+The native dialog passed six checks on macOS arm64 with OpenCode 2.2.0 and OpenTUI 0.7.0.
+This result does not verify the native dialog on OpenCode 2.2.1.

@@ -35,10 +35,11 @@ const output = createReadStream("", { fd: master[0]!, autoClose: false });
 output.on("data", bytes => { terminal += decoder.decode(bytes as Buffer, { stream: true }); });
 output.on("error", () => {}); // macOS returns EIO when the slave terminal closes.
 const write = (text: string) => { const bytes = new TextEncoder().encode(text); libc.symbols.write(master[0]!, ptr(bytes), bytes.length); };
+const displayed = (text: string) => Bun.stripANSI(terminal).replace(/\s+/g, "").includes(text.replace(/\s+/g, ""));
 async function waitFor(text: string, timeout = 30000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (Bun.stripANSI(terminal).includes(text)) return;
+    if (displayed(text)) return;
     await Bun.sleep(100);
   }
   throw new Error(`Terminal did not display ${text}. Diagnostics: ${root}`);
@@ -50,10 +51,10 @@ try {
   write("OptChat settings"); await Bun.sleep(800);
   write("\r");
   await waitFor("Memory: disabled");
-  assert(Bun.stripANSI(terminal).includes("Compactor:"));
+  assert(displayed("Compactor:"));
   write("\x1b[B".repeat(6)); await Bun.sleep(400); write("\r");
   await waitFor("Originals: 0");
-  assert(Bun.stripANSI(terminal).includes("Database: not created"));
+  assert(displayed("Database: not created"));
   console.log(JSON.stringify({ root, checks: ["automatic TUI package export", "home status bar", "palette command", "native settings dialog", "inactive installation", "native memory status"], modelCalls: 0 }, null, 2));
 } finally {
   write("\x1b\x03"); await Bun.sleep(400); write("\x03");

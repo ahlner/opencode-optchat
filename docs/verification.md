@@ -873,3 +873,43 @@ The packed package passed its public export, TypeScript consumer, and private ho
 The deterministic suite passed 131 tests with 12,183 assertions.
 The TypeScript and documentation checks passed.
 The TUI dialog test did not run. Its terminal fixture requires macOS, and the check host is Linux.
+
+## Post-merge OpenCode 2.2 regression review
+
+The local review started from merge commit `ee0ca4a7cf6284e787e9ae11e125b2cff23b7def` on 29 October 2026.
+The environment used macOS arm64, Bun 1.4.4, and OpenCode 2.2.0.
+PR #1 and GitHub release 0.1.4 already existed.
+The tag workflow staged the npm package. Public npm still reported 0.1.3 during this review.
+Staged publication requires a separate maintainer approval with two-factor authentication.
+
+The supplied review archive contained ten additional generation tests.
+The existing cancellation tests already covered OpenCode 2.0.26, 2.1.1, and 2.2.0.
+The review retained those newer tests and added only the missing generation cases.
+
+The new tests cover these API forms:
+
+- OpenCode 2.0.26 and 2.1.1 with only `generate.text`.
+- OpenCode 2.1.1 with an empty `experimental` object.
+- OpenCode 2.2.0 with only `experimental.generate.text`.
+- OpenCode 2.2.0 with both APIs and a legacy method that throws.
+
+Each form checks publication, permanent provider failures, method receivers, models, prompts, abort signals, and retained originals.
+A permanent failure must not select the other API.
+The production source and compiled distribution remain unchanged.
+
+| Check | Local result |
+| --- | --- |
+| `bun run check` | 143 tests and 12,333 assertions passed, including TypeScript and documentation checks |
+| `bun run check:dist` | Compiled distribution matches the committed files |
+| `bun run audit:licenses` | Fresh frozen-lockfile installation matches all 415 inventory entries |
+| `bun run test:package` | Public exports, consumer types, 23 lifecycle groups, and private settings integration passed |
+| `bun run test:tui` | Six native terminal checks passed with OpenTUI 0.7.0 and no model calls |
+
+The package lifecycle used 133 loopback requests. The private settings integration used 97 loopback requests.
+The initial license check included stale local package directories and failed.
+A fresh installation matched the committed inventory without changes.
+The initial terminal check required literal spaces that terminal updates did not retain together with their text.
+Whitespace normalization let the fixture recognize the status indicator and exercise the settings and memory status dialogs.
+
+These local host checks used OpenCode 2.2.0. The older Linux host results remain historical evidence.
+No paid model call was made. These fixtures do not establish semantic summary quality or production readiness.

@@ -8,8 +8,9 @@
 - Refresh the installed dependency license inventory.
 
 
-The macOS terminal fixture on OpenCode 2.2.1 did not display the OptChat status indicator.
-The native terminal dialog remains unverified. Private settings RPC checks remain separate.
+The corrected macOS terminal fixture passed six checks on OpenCode 2.2.0 with OpenTUI 0.7.0.
+The earlier fixture did not recognize status text across terminal updates.
+The native dialog remains unverified on OpenCode 2.2.1.
 
 ## 0.1.3 — 2026-10-20
 

@@ -1731,6 +1731,12 @@ function sameDirectory(left, right) {
   }
 }
 
+// src/adapters/opencode/host-version.ts
+var supportedHost = /^2\.(?:0|1|2)\.\d+$/;
+function insistSupportedHost(version) {
+  insist(supportedHost.test(version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x, 2.1.x, and 2.2.x only");
+}
+
 // src/adapters/opencode/adoption.ts
 import { Database as Database3 } from "bun:sqlite";
 import { existsSync as existsSync2, readdirSync, rmSync, statSync } from "fs";
@@ -1797,7 +1803,7 @@ function adoptMemory(sourceDatabase, targetDatabase, targetScopeId) {
 
 // src/adapters/opencode/settings.ts
 async function setupSettings(ctx, start) {
-  insist(/^2\.(?:0|1)\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x and 2.1.x only");
+  insistSupportedHost(ctx.app.version);
   if (!ctx.rpc || !ctx.storage)
     return start(ctx);
   const explicit = Object.keys(ctx.options).length > 0;
@@ -2233,7 +2239,7 @@ function createRecoveryLoop(options) {
 
 // src/adapters/opencode/plugin.ts
 var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
-  insist(/^2\.(?:0|1)\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x and 2.1.x only");
+  insistSupportedHost(ctx.app.version);
   const config = ctx.options;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);
@@ -2297,6 +2303,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         store.remove("adapter", session.id);
     }
   let activeJob;
+  const generateText = (input, options) => (ctx.experimental?.generate ?? ctx.generate).text(input, options);
   const compactor = config.fakeSummarizer ? new FakeSummarizer : new ModelSummarizer(async (prompt, signal) => {
     const models = await diagnostics.span("compactor.model.list", () => abortable(() => ctx.model.list({}), signal));
     const model = models.data.find((m) => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
@@ -2314,7 +2321,7 @@ var memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
         diagnostics.content("compactor.request", { requestId, jobId, parentId, model: config.compactorModel, prompt });
         let result;
         try {
-          result = await abortable(() => ctx.generate.text({ model: config.compactorModel, prompt }, { signal }), signal);
+          result = await abortable(() => generateText({ model: config.compactorModel, prompt }, { signal }), signal);
         } catch (error) {
           diagnostics.emit("compactor.failed", { requestId, jobId, parentId, errorCode: diagnosticCode(error) });
           throw error;
@@ -2980,4 +2987,4 @@ export {
   plugin_default as default
 };
 
-//# debugId=118910C12B7D4A0D64756E2164756E21
+//# debugId=5B3989834205015764756E2164756E21

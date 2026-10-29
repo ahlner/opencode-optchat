@@ -11,6 +11,7 @@ import { compactorRequest } from "./compactor-request.ts";
 import { abortable } from "../../core/abort.ts";
 import { Diagnostics, diagnosticCode } from "./diagnostics.ts";
 import { automaticScope, sameDirectory } from "./settings-scope.ts";
+import { insistSupportedHost } from "./host-version.ts";
 import { createRecoveryLoop } from "./recovery-loop.ts";
 import { defaultSummaryAcceptBytes, validateSummaryAcceptBytes } from "../../compactor/summarizer.ts";
 
@@ -18,7 +19,7 @@ interface Config { database: string; projectId?: string; compactorModel?: { prov
 interface Journal { seen: Record<string, string>; terminalIds: string[]; activeId?: string; agentId?: string }
 interface Checkpoint { id: string; sessionId: string; generation: number; messages: RawMessage[] }
 const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
-  insist(/^2\.(?:0|1)\.\d+$/.test(ctx.app.version), "UNSUPPORTED_HOST", "OptChat supports OpenCode 2.0.x and 2.1.x only");
+  insistSupportedHost(ctx.app.version);
   const config = ctx.options as unknown as Config;
   const summaryAcceptBytes = config.summaryAcceptBytes ?? defaultSummaryAcceptBytes;
   validateSummaryAcceptBytes(summaryAcceptBytes);
@@ -84,6 +85,9 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
     if (!(store.db.query("SELECT count(*) n FROM sources WHERE session=? AND generation=?").get(session.id, session.generation) as { n: number }).n) store.remove("adapter", session.id);
   }
   let activeJob: string | undefined;
+  // OpenCode 2.2.0 moved stateless generation to `experimental.generate.text`. Earlier hosts expose `generate.text`.
+  // Resolve on demand so a fixture context without a generation API can still use a fake summarizer.
+  const generateText = (input: Parameters<PluginContext["generate"]["text"]>[0], options: { signal: AbortSignal }) => (ctx.experimental?.generate ?? ctx.generate).text(input, options);
   const compactor = config.fakeSummarizer ? new FakeSummarizer() : new ModelSummarizer(async (prompt, signal) => {
     const models = await diagnostics.span("compactor.model.list", () => abortable(() => ctx.model.list({}), signal));
     const model = models.data.find(m => m.id === config.compactorModel?.id && m.providerID === config.compactorModel?.providerID);
@@ -100,7 +104,7 @@ const memory = Plugin.define({ id: "optchat.memory", async setup(ctx) {
       diagnostics.emit("compactor.sent", { requestId, jobId, parentId, inputHash: hash(prompt) });
       diagnostics.content("compactor.request", { requestId, jobId, parentId, model: config.compactorModel, prompt });
       let result;
-      try { result = await abortable(() => ctx.generate.text({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal }), signal); }
+      try { result = await abortable(() => generateText({ model: config.compactorModel as Parameters<PluginContext["generate"]["text"]>[0]["model"], prompt }, { signal }), signal); }
       catch (error) { diagnostics.emit("compactor.failed", { requestId, jobId, parentId, errorCode: diagnosticCode(error) }); throw error; }
       diagnostics.content("compactor.response", { requestId, jobId, parentId, model: config.compactorModel, response: result.text });
       diagnostics.emit("compactor.received", { requestId, jobId, parentId, outputBytes: Buffer.byteLength(result.text, "utf8") });

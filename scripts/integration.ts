@@ -136,6 +136,9 @@ let db: Database | undefined;
 const publications = () => (db!.query("SELECT value FROM entities WHERE bucket='publications'").all() as { value: string }[]).map(r => JSON.parse(r.value));
 try {
   await ready();
+  const hostVersion = (await api("GET", "/api/info")).version as string;
+  // The 2.1.x series moved provider retries inside the generate request. Later series keep that behavior.
+  const hostRetriesProviderCalls = /^2\.(?:1|2)\./.test(hostVersion);
   const create = () => api("POST", "/api/session", { location: { directory: join(root, "project") }, model: { providerID: "fixture", id: "fixture" }, permissions: [{ action: "*", resource: "*", effect: "allow" }] });
    const a = await create();
    const settingsCall = async (method: string, input: unknown = {}) => (await api("POST", `/api/rpc/optchat.settings/${method}?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`, { input })).output;
@@ -191,7 +194,9 @@ try {
   const batchDiagnostics = (await Bun.file(dbPath + ".diagnostics.ndjson").text()).trim().split("\n").map(line => JSON.parse(line));
   assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "leaf" && row.batchSize > 1), "Actual native worker batches original leaves");
   assert(batchDiagnostics.some(row => row.event === "job.batch" && row.kind === "parent" && row.batchSize > 1), "Parent batching remains active");
-  assert(batchDiagnostics.filter(row => row.event === "compactor.backoff").length >= 2 || unavailableRequestIndices.every(index => requests.slice(index + 1).some(retry => JSON.stringify(retry.messages) === JSON.stringify(requests[index].messages))), "The adapter or host retries every temporary provider failure");
+  if (hostRetriesProviderCalls) assert.equal(batchDiagnostics.filter(row => row.event === "compactor.failed").length, 0, "The 2.1.x and newer host retries the provider call, so the outage never reaches the adapter");
+  else assert(batchDiagnostics.filter(row => row.event === "compactor.backoff").length >= 2, "The 2.0.x host surfaces the outage, so the adapter records bounded backoff");
+  assert(batchDiagnostics.some(row => row.event === "compactor.received"), "The compactor receives a summary after the provider outage");
   const batchSources = (db.query("SELECT value FROM sources WHERE session=?").all(batchSession.id) as { value: string }[]).map(r => JSON.parse(r.value));
   assert.equal(batchSources.filter(r => r.kind === "tool_result").length, 4);
   for (let i = 0; i < 4; i++) assert(batchSources.some(r => r.kind === "tool_result" && r.payload.includes(`BATCH_ITEM_${i}`) && r.payload.includes("x".repeat(700))), "Every full result remains retained");
@@ -453,6 +458,13 @@ try {
   assert.equal(db.query("SELECT id FROM sources WHERE session=?").all(activeRevocation.id).length, 0, "Revoked active data cannot be imported on interruption");
   assert(JSON.parse((db.query("SELECT value FROM entities WHERE bucket='scopes'").get() as { value: string }).value).policy > policyBefore, "Native policy changes advance the pinned policy revision");
   const oversized = await create(), beforeOversized = requests.length;
+  // The adapter stops an oversized turn only when it admits memory. Wait until the background preparation is idle.
+  await until(async () => {
+    const jobs = (db!.query("SELECT count(*) n FROM jobs WHERE status IN ('pending','running')").get() as { n: number }).n;
+    if (jobs > 0) return false;
+    const rows = (await Bun.file(dbPath + ".diagnostics.ndjson").text()).trim().split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }).filter(row => row.phase === "background.recovery");
+    return rows.filter(row => row.event === "phase.start").length <= rows.filter(row => row.event === "phase.end").length;
+  }, "preparation is idle before the oversized turn");
   await api("POST", `/api/session/${oversized.id}/prompt`, { text: "OVERSIZED_ACTIVE_SENTINEL " + "x".repeat(160000) });
   await until(async () => ["failed", "interrupted"].includes((await api("GET", `/api/session/${oversized.id}`)).outcome), "oversized active request stops explicitly");
   assert(!requests.slice(beforeOversized).some(r => r.tools && r.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes("OVERSIZED_ACTIVE_SENTINEL"))), "No oversized primary request reaches the provider");

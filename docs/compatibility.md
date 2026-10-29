@@ -2,10 +2,10 @@
 
 ## Tested environment
 
-- macOS arm64 for OpenCode 2.0.26.
-- Linux x64 for OpenCode 2.0.26 and 2.1.1.
-- Bun 1.4.2.
-- OpenCode 2.0.x and 2.1.x. The tested patches are 2.0.26 and 2.1.1.
+- macOS arm64.
+- Linux x64 for the OpenCode 2.1.1 and 2.2.0 host checks.
+- Bun 1.4.2, 1.4.3, and 1.4.4.
+- OpenCode 2.0.x, 2.1.x, and 2.2.x. The tested patches are 2.0.26, 2.1.1, and 2.2.0.
 - Official V2 plugin API and the exact pinned `@opencode/plugin` dependency.
 - Private OpenCode service processes with a local OpenAI-compatible model fixture.
 
@@ -37,7 +37,7 @@ The tests do not establish support for other operating systems or providers.
 | Edit or rewind | Core prefix migration and actual partial rewind. The adapter rejects uncertain changes |
 | Session move or worktree change | Actual move with stable project identity and old/new source provenance |
 | Scope or permission revocation | Core epochs, native agent/session rules, and revocation during an active turn |
-| Oversized active turn | Explicit stop before the primary host model call. No cut tool pairs |
+| Oversized active turn | Explicit stop before the primary host model call in memory mode. Native mode leaves the limit to the host. No cut tool pairs |
 | Long history | Core fixture above ten context windows, bounded request, and exact retrieval |
 | Real summary quality | A real two-session host case passed. No repeated baseline benchmark |
 | Git package installation | Public GitHub package, fresh isolated cache, compiled root export, and full private host lifecycle |
@@ -48,7 +48,7 @@ The tests do not establish support for other operating systems or providers.
 | Automatic preparation continuation | Timer resumes a released job without another native prompt or event. Failed jobs require confirmed retry |
 | Cold existing-session input | Native mode preserves own history while summaries remain unavailable. Admission does not generate summaries |
 | Compactor leaf and parent batches | Checked item IDs, bounded input, independent size limits, cancellation, retention fences, and actual host requests |
-| Temporary provider outages | Bounded retries and backoff. Actual HTTP 503 recovery passes without manual retry |
+| Temporary provider outages | Bounded adapter retries and backoff on a 2.0.x host. The 2.1.x and 2.2.x hosts retry provider calls inside the generate request. Actual HTTP 503 recovery passes without manual retry |
 | Invalid cached summaries | Derived-memory reconstruction retains originals and unaffected publication order |
 
 Support applies only to the checked V2 boundaries.
@@ -114,3 +114,6 @@ For each new lifecycle feature:
 
 A model quality claim requires repeated real runs, controlled fixtures, and manual outcome review.
 Fixture success alone is not sufficient.
+
+The macOS terminal fixture on OpenCode 2.2.1 did not display the OptChat status indicator.
+The native terminal dialog remains unverified. Private settings RPC checks remain separate.

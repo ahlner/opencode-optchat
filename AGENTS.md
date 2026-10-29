@@ -7,7 +7,7 @@ Use Bun for installation, scripts, tests, SQLite, and runtime execution.
 Do not use npm, pnpm, yarn, or the Node executable.
 Imports from `node:` use Bun's compatible built-in modules.
 
-The current adapter supports OpenCode **2.0.x and 2.1.x**.
+The current adapter supports OpenCode **2.0.x**, **2.1.x**, and **2.2.x**.
 Do not describe this implementation as production-ready or fully compliant with the paper.
 Read `README.md` and `docs/compatibility.md` before changing the adapter.
 Read `docs/design.md` before changing storage or authorization.
@@ -53,7 +53,7 @@ bun run demo
 ```
 
 `check` runs TypeScript checks and the deterministic core tests.
-`test:integration` requires the `opencode` executable at a supported version.
+`test:integration` requires the `opencode` executable at version 2.0.x, 2.1.x, or 2.2.x.
 The integration script starts a private service and a loopback model fixture.
 The script does not use the user's service, configuration, credentials, or database.
 The script keeps diagnostic files in its reported temporary directory.
@@ -174,7 +174,7 @@ Read `docs/verification.md` for the real-model results and failed development at
 ## Adapter rules
 
 Use the V2 documentation at `https://opencode.ai/v2/docs/`.
-Use the installed 2.1.1 declarations to check the supported implementation.
+Use the installed 2.2.0 declarations to check the supported implementation.
 Do not infer V2 behavior from V1 documentation or the generic config schema.
 
 The `prompt` hook is not an exactly-once turn admission boundary.
@@ -184,7 +184,7 @@ Remove historical messages only at a verified active transcript boundary.
 Never remove individual tool parts to reduce the context size.
 
 Direct memory tools require `options: { codemode: false }`.
-The adapter uses `ctx.generate.text` for summaries. This API does not create session messages.
+The adapter uses `ctx.experimental.generate.text` for summaries and falls back to `ctx.generate.text` on 2.0.x and 2.1.x hosts. This API does not create session messages.
 Its model request uses the configured compactor model.
 The primary output option is `maxTokens`, not `maxOutputTokens`.
 

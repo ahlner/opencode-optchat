@@ -44,7 +44,7 @@ Its inclusion does not relicense the cited Gist or other external sources.
 
 ### OpenCode
 
-V2 documentation and installed 2.0.26 and 2.1.1 declarations served as API references.
+V2 documentation and installed 2.2.0 declarations served as API references.
 The project does not vendor the SDK implementation.
 Generated project declarations can reference external SDK types.
 

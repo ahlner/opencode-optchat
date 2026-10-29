@@ -1,11 +1,11 @@
 {
-  "reviewDate": "2026-10-09",
-  "lockfileSha256": "0abc85778f6ca611a0db4be0e46d7844d24c539e2f363a9fd87199134cd0428a",
+  "reviewDate": "2026-10-29",
+  "lockfileSha256": "522234456d998b335db86ede389ddc417d284d3253d6c1be5250305ad2661b96",
   "scope": "Installed package metadata and root notice files. The review excludes uninstalled platform-specific artifacts. This inventory is not a legal certification.",
-  "packageInstances": 424,
+  "packageInstances": 415,
   "licenseCounts": {
-    "Apache-2.0": 72,
-    "MIT": 211,
+    "Apache-2.0": 71,
+    "MIT": 203,
     "ISC": 85,
     "BlueOak-1.0.0": 45,
     "BSD-3-Clause": 2,
@@ -867,13 +867,6 @@
       ]
     },
     {
-      "name": "@msgpackr-extract/msgpackr-extract-linux-x64",
-      "version": "3.0.4",
-      "path": "node_modules/@msgpackr-extract/msgpackr-extract-linux-x64",
-      "declaredLicense": "MIT",
-      "notices": []
-    },
-    {
       "name": "@npmcli/agent",
       "version": "4.0.2",
       "path": "node_modules/@npmcli/agent",
@@ -1566,41 +1559,9 @@
       ]
     },
     {
-      "name": "@opentui/core-linux-x64",
+      "name": "@opentui/core-darwin-arm64",
       "version": "0.7.0",
-      "path": "node_modules/@opentui/core-linux-x64",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d9c397a5dc5ac77a2a08fc967ea06a65317a4b5b8de48f6f732ffcb21737e3d2"
-        },
-        {
-          "file": "LICENSE-GHOSTTY",
-          "sha256": "e3c017838d3f532f52fc2361ffd5528fd0d7dc158ea34e0f169d40185845c920"
-        },
-        {
-          "file": "LICENSE-LCMS2",
-          "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31"
-        },
-        {
-          "file": "LICENSE-LIBWEBP",
-          "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
-        },
-        {
-          "file": "LICENSE-STB",
-          "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
-        },
-        {
-          "file": "LICENSE-WUFFS",
-          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
-        }
-      ]
-    },
-    {
-      "name": "@opentui/core-linux-x64-musl",
-      "version": "0.5.17",
-      "path": "node_modules/@opentui/core-linux-x64-musl",
+      "path": "node_modules/@opentui/core-darwin-arm64",
       "declaredLicense": "MIT",
       "notices": [
         {
@@ -1960,9 +1921,9 @@
       ]
     },
     {
-      "name": "@typescript/typescript-linux-x64",
+      "name": "@typescript/typescript-darwin-arm64",
       "version": "7.0.2",
-      "path": "node_modules/@typescript/typescript-linux-x64",
+      "path": "node_modules/@typescript/typescript-darwin-arm64",
       "declaredLicense": "Apache-2.0",
       "notices": [
         {
@@ -2482,18 +2443,6 @@
       ]
     },
     {
-      "name": "detect-libc",
-      "version": "2.1.2",
-      "path": "node_modules/detect-libc",
-      "declaredLicense": "Apache-2.0",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
-        }
-      ]
-    },
-    {
       "name": "diff",
       "version": "9.0.0",
       "path": "node_modules/diff",
@@ -2629,18 +2578,6 @@
         {
           "file": "LICENSE",
           "sha256": "97af7428f93afbab9bf79cd09254da1357161794f4255eb1b4599f04dd2d2e7c"
-        }
-      ]
-    },
-    {
-      "name": "fast-check",
-      "version": "4.10.2",
-      "path": "node_modules/fast-check",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "b2bd24f5c975f659433271170b17e0a769b12ef8065bbca6dcd5511d57e94ce0"
         }
       ]
     },
@@ -3365,18 +3302,6 @@
       ]
     },
     {
-      "name": "mime",
-      "version": "4.1.0",
-      "path": "node_modules/mime",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "68e28d2ab9d180b8fc3d93fac0cc3e5275e4d19a23ab3dcf5458cf4e31e2233b"
-        }
-      ]
-    },
-    {
       "name": "mime-db",
       "version": "1.54.0",
       "path": "node_modules/mime-db",
@@ -3605,30 +3530,6 @@
       ]
     },
     {
-      "name": "msgpackr",
-      "version": "2.1.0",
-      "path": "node_modules/msgpackr",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d00470775464c789c7ac04cfba3bf1b79ef149790eb72556d1c51d8f50c8e7f3"
-        }
-      ]
-    },
-    {
-      "name": "msgpackr-extract",
-      "version": "3.0.4",
-      "path": "node_modules/msgpackr-extract",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "d00470775464c789c7ac04cfba3bf1b79ef149790eb72556d1c51d8f50c8e7f3"
-        }
-      ]
-    },
-    {
       "name": "negotiator",
       "version": "1.1.0",
       "path": "node_modules/negotiator",
@@ -3673,18 +3574,6 @@
         {
           "file": "LICENSE",
           "sha256": "662a1b0115251cfb29c6aed0f221f8847bc49c6365d1c53a62c9f4bccc2489c3"
-        }
-      ]
-    },
-    {
-      "name": "node-gyp-build-optional-packages",
-      "version": "5.2.2",
-      "path": "node_modules/node-gyp-build-optional-packages",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "7b3638496004b2daed183a91c4ba45d3ef6331db6c9d0eb1dd882a505630c172"
         }
       ]
     },
@@ -4205,18 +4094,6 @@
       ]
     },
     {
-      "name": "pure-rand",
-      "version": "8.4.2",
-      "path": "node_modules/pure-rand",
-      "declaredLicense": "MIT",
-      "notices": [
-        {
-          "file": "LICENSE",
-          "sha256": "e9d6a94ab01c6c9ab68c099d3ba8dd9f8aca60f2e2250c2302275405fca9e806"
-        }
-      ]
-    },
-    {
       "name": "read-cmd-shim",
       "version": "6.0.0",
       "path": "node_modules/read-cmd-shim",
@@ -4501,7 +4378,7 @@
     },
     {
       "name": "solid-js",
-      "version": "1.9.15",
+      "version": "1.9.12",
       "path": "node_modules/solid-js",
       "declaredLicense": "MIT",
       "notices": [

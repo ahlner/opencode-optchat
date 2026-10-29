@@ -28,7 +28,7 @@ This license does not replace licenses for dependencies, external documents, run
 | `@opencode/theme` | 2.2.0 | MIT | Development only |
 | `@opentui/core` | 0.7.0 | MIT | Development only |
 | `@opentui/solid` | 0.7.0 | MIT | Development dependency and external host-provided peer |
-| `solid-js` | 1.9.15 | MIT | Development dependency and external host-provided peer |
+| `solid-js` | 1.9.12 | MIT | Development dependency and external host-provided peer |
 | `@types/bun` | 1.4.3 | MIT | Development only |
 | `typescript` | 7.0.2 | Apache-2.0 | Development only |
 

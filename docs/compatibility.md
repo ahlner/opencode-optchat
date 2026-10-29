@@ -10,6 +10,10 @@
 - Private OpenCode service processes with a local OpenAI-compatible model fixture.
 
 The adapter rejects other OpenCode versions explicitly.
+The private 2.1.1 host integration covers local plugin lifecycle cases in this matrix.
+Git package installation has separate evidence from an earlier host test.
+The optional terminal peer accepts OpenCode 2.0's `@opentui/solid` 0.5.17.
+The pinned OpenCode 2.1.1 plugin requires `@opentui/solid` 0.6.6 or later.
 The tests do not establish support for other operating systems or providers.
 
 ## Support matrix
@@ -110,3 +114,6 @@ For each new lifecycle feature:
 
 A model quality claim requires repeated real runs, controlled fixtures, and manual outcome review.
 Fixture success alone is not sufficient.
+
+The macOS terminal fixture on OpenCode 2.2.1 did not display the OptChat status indicator.
+The native terminal dialog remains unverified. Private settings RPC checks remain separate.

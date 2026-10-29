@@ -1,6 +1,6 @@
 {
   "name": "@ahlner/opencode-optchat",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "license": "MIT",
   "author": "Philipp Ahlner",
   "repository": {
@@ -30,15 +30,23 @@
       "default": "./dist/adapters/opencode/tui.js"
     }
   },
-  "files": ["dist", "README.md", "docs", "AGENTS.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "docs",
+    "AGENTS.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "engines": {
     "bun": ">=1.4.2"
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
     "check": "bun run test:docs && bun run typecheck && bun test",
-    "compile": "bun build src/index.ts src/adapters/opencode/plugin.ts src/adapters/opencode/tui.ts --target bun --outdir dist --root src --external @opencode/plugin --external @opentui/solid --external solid-js --sourcemap=external && tsc -p tsconfig.build.json",
+    "compile": "bun build src/index.ts src/adapters/opencode/plugin.ts src/adapters/opencode/tui.ts --target bun --outdir dist --root src --external @opencode/plugin --external @opentui/solid --external solid-js --sourcemap=external && bun node_modules/typescript/bin/tsc -p tsconfig.build.json",
     "check:dist": "bun run compile && git diff --exit-code -- dist",
     "pack": "bun run compile && bun pm pack",
     "demo": "bun run examples/two-session-demo.ts",
@@ -63,15 +71,19 @@
     "solid-js": ">=1.9.0"
   },
   "peerDependenciesMeta": {
-    "@opentui/solid": { "optional": true },
-    "solid-js": { "optional": true }
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode/theme": "2.2.0",
     "@opentui/core": "0.7.0",
     "@opentui/solid": "0.7.0",
     "@types/bun": "1.4.3",
-    "solid-js": "1.9.15",
+    "solid-js": "1.9.12",
     "typescript": "7.0.2"
   }
 }

@@ -1,6 +1,6 @@
 # Source and license review
 
-Review date: 9 October 2026.
+Review date: 20 October 2026.
 Project license: MIT.
 Copyright (c) 2026 Philipp Ahlner.
 
@@ -57,16 +57,16 @@ The implementation work used the reference sources.
 
 ## Dependencies
 
-`docs/dependency-licenses.json` records 428 installed package instances, including repeated installations and versions.
+`docs/dependency-licenses.json` records 434 installed package instances, including repeated installations and versions.
 This count does not represent distinct package names or all platform-specific lockfile artifacts.
 The review did not inspect uninstalled platform packages.
 
 | Declaration | Installed instances |
 | --- | ---: |
-| MIT | 213 |
-| ISC | 86 |
+| MIT | 221 |
+| ISC | 85 |
 | Apache-2.0 | 72 |
-| BlueOak-1.0.0 | 46 |
+| BlueOak-1.0.0 | 45 |
 | BSD-2-Clause | 4 |
 | BSD-3-Clause | 2 |
 | AFL-2.1 OR BSD-3-Clause | 1 |

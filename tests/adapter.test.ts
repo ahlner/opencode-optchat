@@ -10,7 +10,7 @@ test("an admitted memory turn cannot switch to native mode when host validation 
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-pinned-mode-")), database = join(root, "memory.sqlite");
   const hooks: Record<string, (event: any) => Promise<void>> = {}; let unavailable = false;
   const ctx: any = {
-    app: { version: "2.0.26" }, location: { directory: root, project: { id: "stable", canonical: root } },
+    app: { version: "2.1.1" }, location: { directory: root, project: { id: "stable", canonical: root } },
     options: { database, scopeId: "u:p", fakeSummarizer: true, waitMs: 100 },
     session: { hook: async (name: string, fn: any) => { hooks[name] = fn; }, get: async () => ({ projectID: "stable", location: { directory: root }, permissions: [] }), context: async () => { if (unavailable) throw new Error("Host is unavailable"); return [{ id: "current", type: "user", time: { created: 1 }, text: "CURRENT" }]; } },
     agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ providerID: "fixture", id: "fixture", limit: { context: 32000, output: 1024 } }] }) },
@@ -61,7 +61,7 @@ test("cancelled chunk work preserves durable progress and cannot release another
 });
 
 // The preparation loop waits for its own 15s deadline. The default 5s budget is too short.
-test("cold history uses native messages immediately, remains native through continuations, and prepares independently", async () => {
+for (const hostVersion of ["2.0.26", "2.1.1", "2.2.0"]) test(`cold history preserves cancellation and native continuations on ${hostVersion}`, async () => {
   const root = await mkdtemp(join(process.env.TMPDIR!, "optchat-cold-cancel-"));
   const database = join(root, "memory.sqlite"), hooks: Record<string, any> = {};
   let rpc: Record<string, any> = {}, calls = 0, fast = false, signal: AbortSignal | undefined;
@@ -73,14 +73,14 @@ test("cold history uses native messages immediately, remains native through cont
   ]).flat();
   let cleanup: (() => Promise<void>) | undefined;
   try {
-    cleanup = await plugin.setup({ app: { version: "2.0.26" }, location: { directory: root, project: { id: "stable" } },
+    cleanup = await plugin.setup({ app: { version: hostVersion }, location: { directory: root, project: { id: "stable" } },
       options: { database, scopeId: "cold", compactorModel: { providerID: "fixture", id: "fixture" }, waitMs: 80 },
       storage: { get: async () => undefined, set: async () => {} }, rpc: { register: async (_: any, handlers: any) => { rpc = handlers; return { dispose: async () => {} }; } },
       session: { hook: async (name: string, callback: any) => { hooks[name] = callback; return { dispose: async () => {} }; },
         get: async () => ({ projectID: "stable", agent: "build", permissions: [], location: { directory: root } }),
         context: async ({ sessionID }: any) => sessionID === "fresh-session" ? [{ id: "fresh", type: "user", time: { created: 101 }, text: "FRESH" }] : [...history, { id: "current", type: "user", time: { created: 100 }, text: "CURRENT" }] },
       agent: { get: async () => ({ data: { permissions: [] } }) }, model: { list: async () => ({ data: [{ id: "fixture", providerID: "fixture", limit: { context: 131072, output: 1024 } }] }) },
-      generate: { text: async (_: any, options: any) => { calls++; signal = options.signal; return fast ? { text: "Historical evidence." } : late; } },
+      ...(hostVersion === "2.2.0" ? { experimental: { generate: { text: async (_: any, options: any) => { calls++; signal = options.signal; return fast ? { text: "Historical evidence." } : late; } } }, generate: { text: async () => { throw new Error("Legacy API must not run"); } } } : { generate: { text: async (_: any, options: any) => { calls++; signal = options.signal; return fast ? { text: "Historical evidence." } : late; } }, }),
       tool: { transform: async (callback: any) => { callback({ add() {} }); return { dispose: async () => {} }; } }, event: { subscribe: async function* () {} },
     } as any) as typeof cleanup;
     const request = { sessionID: "cold-session", agent: "build", model: { providerID: "fixture", id: "fixture" }, options: {}, system: [], tools: { optchat_search: {}, native_echo: {} }, messages: [{ id: "past-0", role: "user", content: "HISTORICAL_EVIDENCE_0" }, { id: "current", role: "user", content: "CURRENT" }] };

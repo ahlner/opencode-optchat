@@ -23,6 +23,7 @@ try {
   assert(license.includes("Copyright (c) 2026 Philipp Ahlner"));
   assert(license.includes("Permission is hereby granted, free of charge"));
   assert(await Bun.file(join(packageDir, "THIRD_PARTY_NOTICES.md")).exists());
+  assert(await Bun.file(join(packageDir, "CHANGELOG.md")).exists());
   assert(await Bun.file(join(packageDir, "docs/dependency-licenses.json")).exists());
   assert(await Bun.file(join(packageDir, "docs/writing-guide.md")).exists());
   assert(await checkArchivedPaper(packageDir), "The package must retain the unchanged implementation paper");

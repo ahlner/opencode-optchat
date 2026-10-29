@@ -10,6 +10,7 @@ for (const dir of ["config", "data", "cache", "state", "project", "project/plugi
 const requests: any[] = [];
 let holdSummaries = false;
 let unavailableResponses = 0, unavailableAttempts = 0;
+const unavailableRequestIndices: number[] = [];
 let holdConcurrent = false, inFlightSummaries = 0, peakConcurrentSummaries = 0;
 const heldSummaries = new Set<() => void>();
 const concurrentWaiters = new Set<() => void>();
@@ -20,6 +21,7 @@ const sink = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   const messages = body.messages as any[], all = JSON.stringify(messages);
   if (all.includes("UNTRUSTED_JSON_DATA") && unavailableResponses > 0) {
     unavailableResponses--; unavailableAttempts++;
+    unavailableRequestIndices.push(requests.length - 1);
     return Response.json({ error: { message: "Fixture model is temporarily unavailable", type: "server_error", code: "provider_unavailable" } }, { status: 503 });
   }
   if (holdSummaries && all.includes("UNTRUSTED_JSON_DATA")) await new Promise<void>(resolve => heldSummaries.add(resolve));

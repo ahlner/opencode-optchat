@@ -911,6 +911,7 @@ The initial license check included stale local package directories and failed.
 A fresh installation matched the committed inventory without changes.
 The initial terminal check required literal spaces that terminal updates did not retain together with their text.
 Whitespace normalization let the fixture recognize the status indicator and exercise the settings and memory status dialogs.
+
 The initial Git installation check stopped while the host still activated its Location plugins.
 The corrected fixture retries only that explicit HTTP 503 response within a 120-second limit.
 Other activation errors still fail immediately.

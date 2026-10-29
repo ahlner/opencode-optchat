@@ -152,7 +152,13 @@ try {
    }
    if (gitPackage) {
      // Creating a session does not start its Location services. No model call is needed.
-     await api("GET", `/api/agent?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`);
+     await until(async () => {
+       const response = await fetch(`${url}/api/agent?location%5Bdirectory%5D=${encodeURIComponent(join(root, "project"))}`, { headers: { authorization } });
+       if (response.ok) return true;
+       const detail = await response.text();
+       if (response.status === 503 && detail.includes("Location plugins did not finish activating")) return false;
+       assert.fail(`Git plugin activation failed: ${response.status} ${detail}`);
+     }, "Git plugin activation", 120000);
      await until(async () => await Bun.file(dbPath).exists(), "Git plugin installation and setup", 120000);
    }
   await api("POST", `/api/session/${a.id}/prompt`, { text: "A_DECISION: use Bun; run fixture_echo." });

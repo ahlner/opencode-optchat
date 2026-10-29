@@ -904,12 +904,17 @@ The production source and compiled distribution remain unchanged.
 | `bun run audit:licenses` | Fresh frozen-lockfile installation matches all 415 inventory entries |
 | `bun run test:package` | Public exports, consumer types, 23 lifecycle groups, and private settings integration passed |
 | `bun run test:tui` | Six native terminal checks passed with OpenTUI 0.7.0 and no model calls |
+| `bun run test:git` | Fresh public Git installation passed all 23 lifecycle groups with 133 loopback requests |
 
 The package lifecycle used 133 loopback requests. The private settings integration used 97 loopback requests.
 The initial license check included stale local package directories and failed.
 A fresh installation matched the committed inventory without changes.
 The initial terminal check required literal spaces that terminal updates did not retain together with their text.
 Whitespace normalization let the fixture recognize the status indicator and exercise the settings and memory status dialogs.
+The initial Git installation check stopped while the host still activated its Location plugins.
+The corrected fixture retries only that explicit HTTP 503 response within a 120-second limit.
+Other activation errors still fail immediately.
+The fresh Git installation then passed all lifecycle groups without changing production code.
 
 These local host checks used OpenCode 2.2.0. The older Linux host results remain historical evidence.
 No paid model call was made. These fixtures do not establish semantic summary quality or production readiness.
